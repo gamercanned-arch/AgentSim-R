@@ -4,7 +4,7 @@ AgentSim-R is a synthetic simulation consisting of `LM Agents`. It is a city-sca
 
 ---
 
-> **Summary**: This is a project aimed to observe *emergent behavior* when multiple agents are allowed to interact with environments freely. It somewhat aims to anticipate the behaviors such AI Agents would show in the real world.
+> [!Note] **Summary**: This is a project aimed to observe *emergent behavior* when multiple agents are allowed to interact with environments freely. It somewhat aims to anticipate the behaviors such AI Agents would show in the real world.
 
 ---
 
