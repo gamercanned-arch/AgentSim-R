@@ -1,38 +1,40 @@
 # AgentSim-R - Agent Simulation (Research)
+
 ## Overview
+
 AgentSim-R is a synthetic simulation consisting of `LM Agents`. It is a city-scale, agent-based simulation framework designed to model everyday human behavior using explicit rules, measurable constraints, and mathematically grounded variables. The system intentionally avoids encouraging long reasoning and instead relies on role-based agents operating within realistic economic, social, and physical limits, allowing generative creativity and beliefs.
 
----
+> [!NOTE]   
+> **Summary**: This is a project aimed to observe *emergent behavior* when multiple agents are allowed to interact with environments freely. It somewhat aims to anticipate the behaviors such AI Agents would show in the real world.
 
-> [!Note] **Summary**: This is a project aimed to observe *emergent behavior* when multiple agents are allowed to interact with environments freely. It somewhat aims to anticipate the behaviors such AI Agents would show in the real world.
+## Technical Details
 
----
-
-## Technical Details:
-
-Model Used:
-[HauhauCS/Qwen3.5-4B-Uncensored](https://huggingface.co/HauhauCS/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive)
+**Model Used:**  
+[HauhauCS/Qwen3.5-4B-Uncensored](https://huggingface.co/HauhauCS/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive)  
 > Note: Derived from [Qwen/Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B)
-Model Info:
-- [Q4_K_M](https://huggingface.co/docs/optimum/en/concept_guides/quantization)
+
+**Model Info:**
+- Quantization: [Q4_K_M](https://huggingface.co/docs/optimum/en/concept_guides/quantization)
 - Temperature: [0.7](https://www.promptingguide.ai/introduction/settings)
 - Repeat Penalty: [1.1](https://www.promptingguide.ai/introduction/settings)
 - Top_p: 0.95
 - Min_p: 0
 - Top_k: 20
 
+## Running the Simulation
 
+See the companion Jupyter/Colab notebook: [run_sim.ipynb](./run_sim.ipynb)
 
+> [!CAUTION]   
+>(contains setup, llama-server launch, simulation loop, and logging)
 
 ### 1. Core Objectives
 
 The primary objective of AgentSim-R is to simulate realistic human social and economic behavior in a calm, non-fantastical urban environment. The framework seeks to answer how complex societal patterns emerge from simple, deterministic rules when individuals pursue realistic goals under constraint.
 
-The system is designed for scientific analysis, replayability, and scalability. Every decision made by an agent must be explainable through its internal state, available tools, and environmental context, action is driven by hidden reasoning, probabilistic text generation, or subjective interpretation.
+The system is designed for scientific analysis, replayability, and scalability. Every decision made by an agent must be explainable through its internal state, available tools, and environmental context. Action is driven by hidden reasoning, probabilistic text generation, or subjective interpretation.
 
-AGENT-SIM aims to serve as a reusable foundation for behavioral economics research, social policy testing, urban planning simulations, and longitudinal studies of stress, education, health, and social isolation.
-
----
+AgentSim-R aims to serve as a reusable foundation for behavioral economics research, social policy testing, urban planning simulations, and longitudinal studies of stress, education, health, and social isolation.
 
 ### 2. Design Philosophy and Constraints
 
@@ -40,144 +42,154 @@ AgentSim-R is explicitly grounded in realism. All agent actions are constrained 
 
 Determinism is a core requirement. Given the same initial state and random seed, the simulation will produce identical outcomes. Randomness is only introduced through mathematically defined stochastic processes such as bounded noise, Poisson-distributed events, or market volatility.
 
-
----
-
 ### 3. World Structure and Spatial Model
 
-The simulation world is represented as a continuous two-dimensional plane corresponding to a city
-layout. Every location is assigned fixed coordinates expressed in meters or latitude-longitude pairs.
-Examples of locations include homes, offices, hospitals, schools, stores, and public spaces.
+The simulation world is represented as a continuous two-dimensional plane corresponding to a city layout. Every location is assigned fixed coordinates (expressed in meters or latitude-longitude pairs). Examples of locations include homes, offices, hospitals, schools, stores, and public spaces.
 
-The simulation relies on several mathematical models for it's functioning.
+The simulation relies on several mathematical models:
 
-These include:
-- Happiness Decay Model
+- Happiness Model
 - Health Decay Model
 - Proximity-based Interaction Rule
 - Stock Market Model
 - Stress Model
 
----
----
-$\big(i\big)$. Happines Decay Model
+#### (i) Happiness Model
 
 Agent happiness is determined with a rigid mathematical model:
 
-$$\text{happiness} = \left( 0.3 \cdot \text{health} + 0.3 \cdot \frac{\text{relationships}}{5} + 0.4 \cdot \tanh\left(\frac{\text{money}}{\text{expenses}}\right) \right)\tag{..I}$$
-
-*money denotes the money the agent currently has*<br>
-*max_income denotes the money the agent earns*<br>
-*relationships denotes the relationships (excluding friends) an agent has*
-
----
-$\big(ii\big)$. Health Decay Model
-
-Agent health is determind by the following rigid mathematical model:
-$$\Delta_{health} = -(0.5 \cdot stress + 0.3 \cdot hunger) \cdot e^{0.1 \cdot age} \tag{..II}$$
-
----
-$\big(iii\big)$. Proximity-based Interaction rule
-
-Agent position is represented as a coordinate pair: $$x, y$$ Distance between two agents or an agent and
-a location is computed using Euclidean distance: $$distance = \sqrt{(x1 - x2)^2 + (y1 - y2)^2} \tag{..III}$$
-All proximity-based interactions rely strictly on this calculation $(..III)$
-<br>
-Proximit-Based Interactions :
-(For `talk_to`):
 $$
-interaction = \begin{cases}
- \text allowed, if distance \leq 50 \\
- \text prohibited, if distance \neq \leq 50
- \end{cases} 
+\text{happiness} = 0.3 \cdot \text{health} + 0.3 \cdot \frac{\text{relationships}}{5} + 0.4 \cdot \tanh\left( \frac{\text{money}}{\text{expenses} + \epsilon} \right)
 $$
-<br>
-(for `interact_with`):
+
+- *money* — current cash held by the agent
+- *expenses* — typical or recent outflow (small ε ≈ 1 prevents division by zero)
+- *relationships* — number of meaningful ties (excluding casual friends; divided by 5 for normalization, assuming ~25 max)
+
+> Expenses are determined by money spent by agent(s), on things.
+
+#### (ii) Health Decay Model
+
+Agent health updates according to:
+
+$$    
+\Delta \text{health} = \left[ - (0.5 \cdot \text{stress} + 0.3 \cdot \text{hunger}) + 0.1\text{happiness} \right] \cdot e^{0.1 \cdot \text{age}}
+$$ <br>
+(small baseline recovery from rest/sleep; clamped ≥ 0)
+
+> [!NOTE]   
+> Tool `seek_medicalcare` adjusts health for an amount of money.
+
+#### (iii) Proximity-based Interaction Rule
+
+Agent position is a coordinate pair $(x, y)$. Distance is Euclidean:
 
 $$
-interaction = \begin{cases}
-\text allowed, if distacne \leq 20 \\
-\text prohibited, if distance \neq \leq 20
+\text{distance} = \sqrt{(x_1 - x_2)^2 + (y_1 - y_2)^2}
+$$
+
+Interactions are strictly distance-dependent:
+
+For `talk_to`:
+
+$$
+\text{interaction} =
+\begin{cases}
+\text{allowed}  & \text{if distance} \leq 50 \\
+\text{prohibited} & \text{otherwise}
 \end{cases}
 $$
 
----
-$\big(iv\big)$. Stock Market Model 
+For `interact_with`:
 
-The stock market has a sophisticated mathematical model:
-$$ P_{t+1} = P_{t} \cdot exp \Bigg ( \Big( \mu - 0.5 \sigma_{t}^{2}\Big) + \sigma_{t} \epsilon_{t} \Bigg ) + Impact \big(trade_{t}\big) \tag{..IV}$$
+$$
+\text{interaction} =
+\begin{cases}
+\text{allowed}  & \text{if distance} \leq 20 \\
+\text{prohibited} & \text{otherwise}
+\end{cases}
+$$
+
+#### (iv) Stock Market Model
+
+The stock follows geometric Brownian motion with impact:
+
+$$
+P_{t+1} = P_t \cdot \exp\left( \left( \mu - \frac{1}{2} \sigma_t^2 \right) + \sigma_t \epsilon_t \right) + \text{Impact}(\text{trade}_t)
+$$
 
 where:
+- $P_{t+1}$ — price at the new time step
+- $P_t$ — price at the current time step
+- $\exp$ ensures percentage-based growth/decline and prevents hitting zero
+- $\mu$ — drift (e.g. 0.05 for 5% long-term growth, bull market tendency)
+- $\sigma_t$ — volatility (higher = wilder swings)
+- $\epsilon_t \sim \mathcal{N}(0,1)$ — standard normal noise for random events
+- $\text{Impact}(\cdot)$ — small price adjustment from net trading volume
 
-$\displaystyle P_{t+1}$ is the `Price` at the new time step <br>
-$\displaystyle P_{t}$ is the `Price` at the current time step <br>
-$exp$ ensures that the price grows/shrinks by **percentage** rather than fixed dollars. It also keeps the price from *hitting zero* <br>
-$\mu$ Is a drift function, ensuring long-term trend.  If $\mu = 0.05$, the stock naturally wants to go up 5% over time (like a Bull Market). <br>
-$\sigma_t$ Represents Volatility. A high $\sigma_t$ means the price swings wildly; a low one means it’s stable. <br>
-$\epsilon_{t}$ Represents *Noise*. This is a random number (usually from a Normal Distribution) representing random events. <br>
-$Impact (\cdots)$ Represents Market Impact. How much the price moves specifically because you traded. <br>
+#### (v) Stress Model
 
----
-$\big(v\big)$. Stress Model
-Agent stress is represented by:
-$$\Psi = \frac{ \overbrace{w_1(R-1)^2}^{\text{Relationship Tension}} + \overbrace{w_2 \left( \frac{\text{Expenses}}{\text{Money} + 1} \right)}^{\text{Financial Pressure}} + \overbrace{w_3 \cdot \mathbb{1}_{\text{inv}} \cdot \max(0, P_t - P_{t+1})}^{\text{Market Anxiety}} }{ \underbrace{1 + \alpha \cdot \text{Happiness} + \beta \cdot \text{Max\_Income}}_{\text{Stress Buffer}}}\tag{..V}$$
+Agent stress $\Psi$ is:
 
+$$
+\Psi = \frac{
+  \overbrace{w_1 (R-1)^2}^{\text{Relationship Tension}} +
+  \overbrace{w_2 \left( \frac{\text{Expenses}}{\text{Money} + 1} \right)}^{\text{Financial Pressure}} +
+  \overbrace{w_3 \cdot \mathbb{1}_{\text{inv}} \cdot \max(0, P_t - P_{t+1})}^{\text{Market Anxiety (losses only)}}
+}{
+  1 + \alpha \cdot \text{Happiness} + \beta \cdot \text{Max Income}
+}
+$$
 
----
----
-<br>
-
----
+- $\mathbb{1}_{\text{inv}}$ — indicator (1 if agent has investments, 0 otherwise)
+- Market anxiety only on perceived losses
 
 ### 4. Agent Architecture and Common Rule Template
 
-All agents share an identical execution loop and rule template. Differences in behavior emerge solely from initial attributes, role definitions, and state evolution over time.
+All agents share an identical execution loop and rule template. Differences emerge solely from initial attributes, role definitions, and state evolution.
 
-Each simulation tick follows a *similar* order: perception of environment, evaluation of needs, validation of tool preconditions, execution of one tool action, and deterministic state update.
+Each tick follows: perception → needs evaluation → tool precondition validation → one tool execution → deterministic state update.
 
-No agent is allowed to bypass tool constraints or directly modify its state. All changes must occur through validated tool execution.
+No agent may bypass constraints or directly modify state — all changes occur via validated tools.
 
-Tool calling:
+**Tool calling format:**
 
-```XML
-<tool_call><function={function}><parameter={parameter}>...</parameter></function></tool_call>
+```xml
+<tool_call>{"name": "tool_name", "arguments": {"param1": "value1", "param2": "value2"}}</tool_call>
 ```
 
-**Tool Types** :
-> 1. `talk_to`
-- {person}  
-> 2. `eat_food`
-- {item}
-> 3. `buy_item`
-- {item} 
-> 4. `work_job`
-- {jobname}  
-> 5. `seek_medicalcare`
-- -  
-> 6. `get_education`
-- {type}
-> 7. `move_to`
-- {place} 
-> 8. `call_person`
+**Available Tools:**
+1. `talk_to`
 - {person}
-> 9. `interact_with`
-- {person}<br>
-$or$<br>
+2. `eat_food`
+- {item}
+3. `buy_item`
+- {item}
+4. `work_job`
+- {jobname}
+5. `seek_medicalcare`
+- — (no parameters)
+6. `get_education`
+-  {type}
+7. `move_to`
+- {place}
+8. `call_person`
+- {person}
+9. `interact_with`
+- {person} <br> $or$ <br>
 - {object}
-> 10. `change_status`
-- {relationship_status}<br>
-- - {type}, {person}
+10. `change_status`
+- {relationship_status}
+- - {type}, {person} <br>
 $or$
-- {belief}D
+- {belief}
+11. `attack_person`
+- {person}
+> Since the models are uncensored, the `attack_person` tool helps to monitor dangerous behavior among the agents.
 
+### 5. Agent Metrics
 
----
-
-### 5. Agents maintain explicit numeric metrics including health, money, education level, hunger, stress,
-
-Happiness, work status, and relationship status. Each metric has defined bounds and update rules.
-
-**All Metrics** :
+Agents maintain explicit numeric state variables with defined bounds and update rules:
 
 1. `Happiness`
 2. `Stress`
@@ -188,32 +200,50 @@ Happiness, work status, and relationship status. Each metric has defined bounds 
 7. `Relationships`
 8. `Beliefs`
 
+### 6. Memory and Logging System
+
+Every action, reasoning trace, and event is logged with timestamps and spatial context — enabling full replay, auditing, and longitudinal analysis.
+
+### 7. Known Caveats and Risks
+
+- Oversimplification of human psychology (cognition abstracted into numeric metrics).
+- Calibration of weights/probabilities is critical — poor tuning can cause stagnation or chaotic collapse.
+
+> [!WARNING]   
+> Such LM agents are subject to oversimplification of actual Agents (trained via RL) but this is a fun experiment designed to "see" what would happen in such a scenario, as more and more developers emerge and enthusiasts get into AI, it is not hard to imagine that people would give everyday Language Models (LLMs/SLMs or perhaps VLMs) the power to autonomously control robots.
+
+### 8. Scalability and Performance
+
+| Phase |    Agents    |     Scale      |                Notes                      |
+|-------|--------------|----------------|-------------------------------------------|
+| 1     | 6            | Village-Scale  | 256k context, 1 city, human-defined roles |
+| 2     | ~250         | City-Scale     |               Planned                     |
+| 3     | ~10,000      | Country-Scale  |               Planned                     |
+
 ---
 
-### 5. Memory and Logging System
+---
+---
 
-Every agent action, reasoning, and event is logged with timestamps and spatial context.<br>
-This enables full replay, auditing, and longitudinal analysis.
 
 ---
 
-### 6. Known Caveats and Risks
+### 9. Phase 1
 
-The primary risk is oversimplification of human psychology. While constraints are realistic, internal cognition is abstracted into numeric metrics.
+In Phase 1, the following six agents are initialized with realistic starting conditions:
 
-Calibration of probabilities and weights is critical. Poor calibration can lead to unrealistic stagnation or chaos.
+|     Name     |         Role         |  Age |     Education    |                      Work Status                      |              Key Attributes                |
+|--------------|----------------------|------|------------------|-------------------------------------------------------|--------------------------------------------|
+|   **Alex**   |  Freelance Developer |  28  | High School (CS) |        Unemployed, Income: $40/hr, Freelancing        |      Hobbies: Coding, Building apps        |
+|  **Jamie**   |         Nurse        |  35  | 12 (BSc Nursing) | Employed as a nurse at the hospital, Salary: $60k/year|            Stress: Medium                  |
+|   **Taylor** |        Student       |  21  |   High school    |           Unemployed, Pursuing: Psychology            |      Goal: Get job in mental health        |
+|  **Jordan**  |   Delivery Driver    |  39  |       12         | Employed as a Delivery Person at FedEx, Salary: $20/hr|        Stress: High due to hours           |
+|    **Mia**   |  Teacher (part-time) |  41  |  12 + Master’s   |  Part-time employed at the school, Income: $35k/year  |           Interested in Drawing            |
+|   **Ethan**  | Tech Startup Founder |  30  |   Gradute (CS)   |      Employed at his own Startup, 'Sowl', $5400/week    | Side gig: builds apps, High risk tolerance |
 
----
+> Roles define default behaviors and goals. Agents start with realistic starting states and evolve over time through tool use and events. A tool call is encouraged at every turn to bootstrap interaction.
 
-### 7. Scalability and Performance
 
-> Phase 1:
-- 6 Agents
-- 256k Native Context Length
-- 1 Simulated City
-- Defined Roles, by a human.
-
-> **Note**: Phase 2 and 3 are to be added soon. <br> Phase 2 will scale to $\sim250$ Agents. <br> Phase 3 is expected to scale to $\sim10,000$ 
 
 
 
