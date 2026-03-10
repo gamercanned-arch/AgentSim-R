@@ -2,3 +2,6 @@ logs/
 python/__pycache__/
 .venv/
 .env
+llama.cpp
+models/
+

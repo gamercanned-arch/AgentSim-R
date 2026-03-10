@@ -1,8 +1,8 @@
 import json
 import random
 import re
-from python.state import WorldState
-from python.locations import get_distance, LOCATIONS
+from state import WorldState
+from locations import get_distance, LOCATIONS
 
 # ── item catalog ─────────────────────────────────────────────────────
 
