@@ -140,12 +140,24 @@ def _check_social_cooldown(agent, target_name: str, sim_time: float) -> bool:
 
 def parse_tool_call(tool_call_str: str) -> tuple:
     try:
-        match = re.search(r'<tool_call>(.*?)</tool_call>', tool_call_str, re.DOTALL)
-        if match:
-            data = json.loads(match.group(1).strip())
-            return data.get("name", ""), data.get("arguments", {})
-        return "", {}
-    except (json.JSONDecodeError, AttributeError) as e:
+        # Find the function block inside tool_call
+        func_match = re.search(r'<function=([^>]+)>(.*?)</function>', tool_call_str, re.DOTALL)
+        if not func_match:
+            return "", {}
+        
+        name = func_match.group(1).strip()
+        params_block = func_match.group(2)
+        
+        # Find all parameters
+        args = {}
+        param_matches = re.finditer(r'<parameter=([^>]+)>(.*?)</parameter>', params_block, re.DOTALL)
+        for p in param_matches:
+            p_name = p.group(1).strip()
+            p_value = p.group(2).strip()
+            args[p_name] = p_value
+            
+        return name, args
+    except Exception as e:
         return f"Parse error: {e}", {}
 
 

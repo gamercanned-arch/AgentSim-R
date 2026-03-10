@@ -1,6 +1,6 @@
 import os
 
-SERVER_URL = "http://localhost:8080/completion"
+SERVER_URL = "http://localhost:8080/v1/chat/completions"
 _SERVER_BASE = SERVER_URL.rsplit("/", 1)[0]
 TOKENIZE_URL = _SERVER_BASE + "/tokenize"
 

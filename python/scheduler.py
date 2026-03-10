@@ -3,10 +3,10 @@ import random
 
 import numpy as np
 
-from utils import build_prompt, call_server, count_tokens
-from tools import execute_tool
-from logger import log_agent, log_global, log_death
-from config import (
+from python.utils import build_messages, call_server
+from python.tools import execute_tool
+from python.logger import log_agent, log_global, log_death
+from python.config import (
     PASSIVE_TICK_SECONDS,
     STOCK_MU, STOCK_SIGMA, IMPACT_FACTOR,
     SIM_HOURS_PER_YEAR,
@@ -68,12 +68,14 @@ def run_tick(world) -> bool:
         else "No recent events."
     )
 
-    prompt    = build_prompt(agent_id, world, notification_snapshot, agent.failed_calls)
-    generated = call_server(prompt)
+    # Build the message array (appends user message to history)
+    messages = build_messages(agent_id, world, notification_snapshot, agent.failed_calls)
+    
+    # Call server and retrieve exact token counts processed by Jinja
+    generated, prompt_tokens, generated_tokens = call_server(messages)
 
-    prompt_tokens    = count_tokens(prompt)
-    generated_tokens = count_tokens(generated)
-    agent.total_prompt_tokens += prompt_tokens + generated_tokens
+    # Set total tokens to current absolute context size (NOT cumulative +=)
+    agent.total_prompt_tokens = prompt_tokens + generated_tokens
 
     if generated.startswith("[SERVER ERROR]"):
         log_agent(agent_id, {
@@ -83,17 +85,23 @@ def run_tick(world) -> bool:
             "sim_time": world.sim_time,
         })
         agent.failed_calls += 1
-        agent.busy_until = world.sim_time + 60.0 # penalty retry
+        agent.busy_until = world.sim_time + 60.0 
+        
+        # Pop the user message so we can retry cleanly next turn
+        if agent.chat_history: 
+            agent.chat_history.pop()
         return False
 
     agent.pending_notifications.clear()
 
+    # Save the assistant's generation to memory so it remembers its actions/thoughts
+    agent.chat_history.append({"role": "assistant", "content": generated})
+
     result, success, time_cost = execute_tool(generated, agent_id, world)
 
-    agent.last_3_actions.append(result[:80])
-    if len(agent.last_3_actions) > 3:
-        agent.last_3_actions.pop(0)
-
+    # Store result to be injected into the next turn's user message
+    agent.last_action_result = result
+    
     # Agent is occupied for duration of action
     agent.busy_until = world.sim_time + time_cost
 
@@ -149,7 +157,7 @@ def run_tick(world) -> bool:
     return False
 
 
-# passive stat update
+# ── passive stat update ──────────────────────────────────────────────
 
 def _apply_passive_updates(agent, world):
 
@@ -174,7 +182,7 @@ def _apply_passive_updates(agent, world):
     agent.hunger = min(100.0, agent.hunger + 5.0)
 
     # ── expense decay ──
-    agent.expenses = agent.expenses * 0.99  # Adjusted to 1% per hour instead of 5%
+    agent.expenses = agent.expenses * 0.99  
 
     # ── health ──
     age_factor = math.exp(0.01 * agent.age)
