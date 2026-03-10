@@ -202,4 +202,3 @@ In Phase 1, the following six agents are initialized with realistic starting con
 | **Jordan** | Delivery Driver | 39 | $20 | $2000 | Apartment | Home_Jordan |
 | **Mia** | Teacher | 41 | $35 | $3500 | House | Home_Mia |
 | **Ethan** | Founder | 30 | $100 | $10000 | Luxury House | Home_Ethan |
-```
