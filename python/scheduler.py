@@ -3,10 +3,10 @@ import random
 
 import numpy as np
 
-from python.utils import build_messages, call_server
-from python.tools import execute_tool
-from python.logger import log_agent, log_global, log_death
-from python.config import (
+from utils import build_messages, call_server
+from tools import execute_tool
+from logger import log_agent, log_global, log_death
+from config import (
     PASSIVE_TICK_SECONDS,
     STOCK_MU, STOCK_SIGMA, IMPACT_FACTOR,
     SIM_HOURS_PER_YEAR,

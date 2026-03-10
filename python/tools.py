@@ -516,7 +516,7 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
         )
         if target_agent.health <= 0:
             target_agent.alive = False
-            from python.logger import log_death, log_global
+            from logger import log_death, log_global
             log_death(target_agent)
             log_global({
                 "event":     "agent_death",

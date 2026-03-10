@@ -2,11 +2,8 @@ import json
 import os
 import requests
 
-from python.config import (
-    SERVER_URL, TOKENIZE_URL, PROMPTS_DIR, TOOLS_PATH,
-    MAX_NEW_TOKENS, CHARS_PER_TOKEN,
-)
-from python.locations import get_distance, LOCATIONS
+from config import ( SERVER_URL, TOKENIZE_URL, PROMPTS_DIR, TOOLS_PATH, MAX_NEW_TOKENS, CHARS_PER_TOKEN,)
+from locations import get_distance, LOCATIONS
 
 
 def count_tokens(text: str) -> int:
