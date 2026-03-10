@@ -1,35 +1,59 @@
 from dataclasses import dataclass, field
 from typing import Dict, List
-from datetime import datetime
+
 
 @dataclass
 class AgentState:
     id: int
     name: str
     age: int
-    health: float = 100.0
-    happiness: float = 50.0
-    stress: float = 20.0
-    hunger: float = 30.0
-    education: float = 50.0
-    relationships: int = 2
-    relationships_status: str = "single"  # single, dating, married, etc.
-    beliefs: str = "Neutral"
-    money: float = 500.0
-    max_income: float = 3000.0
-    job: str = "None"
-    location: str = "Home"
-    x: float = 0.0
-    y: float = 0.0
-    alive: bool = True
-    failed_calls: int = 0
+    # core stats (clamped 0–100 at all update sites)
+    health:    float = 100.0
+    energy:    float = 100.0
+    happiness: float =  50.0
+    stress:    float =  20.0
+    hunger:    float =  30.0
+    education: float =  50.0
+    # social
+    relationships:        int = 2
+    relationships_status: str = "single"
+    beliefs:              str = "Neutral"
+    # economy
+    money:         float = 500.0
+    hourly_wage:   float =  20.0   # Current earning rate per hour
+    job:           str   = "None"
+    expenses:      float =   0.0   # rolling spend, decays 5%/hr
+    total_expenses: float =  0.0   # lifetime spend tracker
+    # stock portfolio
+    shares_owned:     int   = 0
+    last_known_price: float = 0.0   # weighted-average cost basis (0 when no position)
+    # world position
+    location: str   = "Home"
+    x:        float =   0.0
+    y:        float =   0.0
+    # lifecycle
+    alive:            bool  = True
+    failed_calls:     int   = 0
     last_action_time: float = 0.0
-    owned_locations: List[str] = field(default_factory=list)  # Houses/property owned
-    current_home: str = ""  # Primary home location
+    busy_until:       float = 0.0   # Event-driven schedule tracker
+    hours_lived:      int   = 0     # passive ticks survived — drives aging
+    # property
+    owned_locations: List[str] = field(default_factory=list)
+    current_home:    str       = ""
+    inventory:       Dict[str, int] = field(default_factory=dict)
+    last_3_actions:  List[str]      = field(default_factory=list)
+    pending_notifications: List[str] = field(default_factory=list)
+    pending_status_requests: Dict[str, str] = field(default_factory=dict)
+    first_turn: bool = True
+    total_prompt_tokens: int = 0
+    social_cooldowns: Dict[str, float] = field(default_factory=dict)
+
 
 class WorldState:
     def __init__(self):
-        self.agents: Dict[int, AgentState] = {}
-        self.sim_time: float = 0.0  # simulated seconds since start
+        self.agents:       Dict[int, AgentState] = {}
+        self.sim_time:     float = 0.0
         self.market_price: float = 100.0
         self.last_passive: float = 0.0
+        self.net_volume_this_period: int = 0
+        self.price_history: List[float] = [100.0]
