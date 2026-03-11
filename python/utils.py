@@ -1,19 +1,26 @@
 import json
 import os
-import requests
+import subprocess
+import tempfile
+import jinja2
 
-from config import ( SERVER_URL, TOKENIZE_URL, PROMPTS_DIR, TOOLS_PATH, MAX_NEW_TOKENS, CHARS_PER_TOKEN,)
+from config import (PROMPTS_DIR, TOOLS_PATH, MAX_NEW_TOKENS, CHARS_PER_TOKEN, CONTEXT_SIZE)
 from locations import get_distance, LOCATIONS
 
+# Point directly to the raw compiled C++ binary
+LLAMA_CLI_PATH = "/content/llama.cpp/build/bin/llama-cli"
+MODEL_PATH = "/content/models/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
+
+# Set up the Jinja2 environment for your custom template
+jinja_env = jinja2.Environment(loader=jinja2.FileSystemLoader(PROMPTS_DIR))
+
+# The template uses raise_exception, so we must provide a Python equivalent
+def raise_exception(msg):
+    raise ValueError(msg)
+jinja_env.globals['raise_exception'] = raise_exception
 
 def count_tokens(text: str) -> int:
-    try:
-        resp = requests.post(TOKENIZE_URL, json={"content": str(text)}, timeout=5)
-        resp.raise_for_status()
-        return len(resp.json().get("tokens", []))
-    except Exception:
-        return len(str(text)) // CHARS_PER_TOKEN
-
+    return len(str(text)) // CHARS_PER_TOKEN
 
 def _market_summary(world) -> str:
     price = world.market_price
@@ -28,7 +35,6 @@ def _market_summary(world) -> str:
         momentum = "insufficient history"
     return f"Current price : ${price:.2f}\nRecent closes : {trend_str}\nMomentum      : {momentum}"
 
-
 def build_messages(agent_id: int, world, notifications: str, failed_calls: int) -> list:
     agent = world.agents[agent_id]
 
@@ -38,7 +44,8 @@ def build_messages(agent_id: int, world, notifications: str, failed_calls: int) 
         if os.path.exists(common_path):
             with open(common_path, encoding="utf-8") as f:
                 common = f.read().strip()
-                # Strip out the old JSON instruction since Jinja handles XML format now
+                # IMPORTANT: Since the Jinja template provides XML instructions, 
+                # we MUST strip the JSON instructions from common_prompt just like the original code did.
                 common = common.replace("You MUST reply with EXACTLY ONE tool call in this exact format:\n\n<tool_call>{\"name\": \"tool_name\", \"arguments\": {\"param\": \"value\"}}</tool_call>", "")
 
         for candidate in (agent.name.lower(), agent.name, agent.name.capitalize()):
@@ -83,7 +90,7 @@ Inventory:     {inventory_str}
 {_market_summary(world)}"""
 
     if failed_calls > 0:
-        user_message_content += "\n\n[SYSTEM WARNING]: Your previous output failed to parse. Remember to output exactly one XML <tool_call>."
+        user_message_content += "\n\n[SYSTEM WARNING]: Your previous output failed to parse. Make sure to use the <tool_call><function=...><parameter=...></parameter></function></tool_call> format exactly."
 
     agent.chat_history.append({"role": "user", "content": user_message_content})
 
@@ -91,36 +98,58 @@ Inventory:     {inventory_str}
 
 
 def call_server(messages: list) -> tuple:
-    # Load tools array to pass to Jinja
+    # 1. Load the tools dict
     with open(TOOLS_PATH, encoding="utf-8") as f:
-        tools = json.load(f)["tools"]
+        tools_list = json.load(f)["tools"]
 
-    payload = {
-        "messages": messages,
-        "tools": tools,
-        "max_tokens": MAX_NEW_TOKENS,
-        "temperature": 0.7,
-        "top_p": 0.95,
-        "stop": ["<|im_end|>"]
-    }
+    # 2. Render the prompt through your template.jinja
+    template = jinja_env.get_template("template.jinja")
+    prompt_text = template.render(
+        messages=messages,
+        tools=tools_list,
+        add_generation_prompt=True
+    )
+    
+    # 3. Write it to a temp file so we don't hit command line length limits
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, encoding="utf-8") as f:
+        f.write(prompt_text)
+        temp_path = f.name
+        
+        cmd = [
+        LLAMA_CLI_PATH,
+        "-m", MODEL_PATH,
+        "-c", str(CONTEXT_SIZE),      # 262144 from config
+        "-n", str(MAX_NEW_TOKENS),    # 128000 from config
+        "--temp", "0.7",
+        "--top-p", "0.95",
+        "-ngl", "999",                # Full GPU offload
+        "--flash-attn",               # Critical for long context speed
+        "-ctk", "q8_0",               # Compress K-cache to 8-bit (Saves ~4GB VRAM)
+        "-ctv", "q8_0",               # Compress V-cache to 8-bit (Saves ~4GB VRAM)
+        "-f", temp_path,              # Pass prompt via file
+        "--no-display-prompt",        # Only output what the AI generates
+        "--log-disable"               # Disable C++ engine info logs
+    ]
     
     try:
-        resp = requests.post(SERVER_URL, json=payload, timeout=120)
-        resp.raise_for_status()
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        output = result.stdout.strip()
+        output = output.replace("<|im_end|>", "").strip()
         
-        data = resp.json()
-        content = data["choices"][0]["message"].get("content", "").strip()
-        usage = data.get("usage", {})
+        # FIX FOR THINKING TAGS: 
+        # The jinja template ends the prompt with `<think>\n`.
+        # Therefore, the model's generated output will NOT include the opening `<think>`.
+        # We must prepend it, so when it is saved to agent.chat_history, it stays intact.
+        if not output.startswith("<think>"):
+            output = f"<think>\n{output}"
         
-        return content, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
+        prompt_tokens = len(prompt_text) // CHARS_PER_TOKEN
+        gen_tokens = len(output) // CHARS_PER_TOKEN
         
-    except Exception as e:
-        # Return error string and 0 tokens so the scheduler catches it
-        return f"[SERVER ERROR] {str(e)}", 0, 0
-    
-    try:
-        resp = requests.post(SERVER_URL, json=payload, timeout=120)
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"].get("content", "").strip()
-    except Exception as e:
-        return f"[SERVER ERROR] {str(e)}"
+        return output, prompt_tokens, gen_tokens
+        
+    except subprocess.CalledProcessError as e:
+        return f"[SERVER ERROR] CLI Failed: {e.stderr}", 0, 0
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)

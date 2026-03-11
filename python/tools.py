@@ -138,17 +138,26 @@ def _check_social_cooldown(agent, target_name: str, sim_time: float) -> bool:
         return True
     return False
 
+import re
+
 def parse_tool_call(tool_call_str: str) -> tuple:
     try:
-        # Find the function block inside tool_call
-        func_match = re.search(r'<function=([^>]+)>(.*?)</function>', tool_call_str, re.DOTALL)
+        # 1. Isolate the <tool_call> block, ignoring the <think> reasoning above it
+        call_match = re.search(r'<tool_call>(.*?)</tool_call>', tool_call_str, re.DOTALL)
+        if not call_match:
+            return "Parse error: No <tool_call> tags found.", {}
+            
+        block = call_match.group(1)
+        
+        # 2. Extract the function name
+        func_match = re.search(r'<function=([^>]+)>(.*?)</function>', block, re.DOTALL)
         if not func_match:
-            return "", {}
+            return "Parse error: No <function=name> tag found.", {}
         
         name = func_match.group(1).strip()
         params_block = func_match.group(2)
         
-        # Find all parameters
+        # 3. Extract the parameters
         args = {}
         param_matches = re.finditer(r'<parameter=([^>]+)>(.*?)</parameter>', params_block, re.DOTALL)
         for p in param_matches:
