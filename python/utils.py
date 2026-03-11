@@ -4,8 +4,8 @@ import subprocess
 import tempfile
 import jinja2
 
-from config import (PROMPTS_DIR, TOOLS_PATH, MAX_NEW_TOKENS, CHARS_PER_TOKEN, CONTEXT_SIZE)
-from locations import get_distance, LOCATIONS
+from python.config import (PROMPTS_DIR, TOOLS_PATH, MAX_NEW_TOKENS, CHARS_PER_TOKEN, CONTEXT_SIZE)
+from python.locations import get_distance, LOCATIONS
 
 # Point directly to the raw compiled C++ binary
 LLAMA_CLI_PATH = "/content/llama.cpp/build/bin/llama-cli"

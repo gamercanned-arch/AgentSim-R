@@ -1,7 +1,7 @@
 import json
 import os
 from datetime import datetime, timezone
-from config import LOG_DIR
+from python.config import LOG_DIR
 
 try:
     os.makedirs(LOG_DIR, exist_ok=True)

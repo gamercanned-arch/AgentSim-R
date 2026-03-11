@@ -1,11 +1,11 @@
 import random
 import numpy as np
 
-from config import N_AGENTS, RANDOM_SEED, CONTEXT_SIZE, CONTEXT_FILL_RATIO
-from state import WorldState, AgentState
-from scheduler import run_tick
-from locations import LOCATIONS
-from logger import log_global
+from python.config import N_AGENTS, RANDOM_SEED, CONTEXT_SIZE, CONTEXT_FILL_RATIO
+from python.state import WorldState, AgentState
+from python.scheduler import run_tick
+from python.locations import LOCATIONS
+from python.logger import log_global
 
 
 # Initial baseline states for each agent's role
