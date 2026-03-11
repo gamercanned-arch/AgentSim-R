@@ -47,6 +47,11 @@ class AgentState:
     first_turn: bool = True
     total_prompt_tokens: int = 0
     social_cooldowns: Dict[str, float] = field(default_factory=dict)
+    
+    # Context & Memory trackers
+    system_prompt: str = ""
+    chat_history: List[Dict[str, str]] = field(default_factory=list)
+    last_action_result: str = "None (First turn)"
 
 
 class WorldState:

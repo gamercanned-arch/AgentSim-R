@@ -1,8 +1,8 @@
 import json
 import random
 import re
-from python.state import WorldState
-from python.locations import get_distance, LOCATIONS
+from state import WorldState
+from locations import get_distance, LOCATIONS
 
 # ── item catalog ─────────────────────────────────────────────────────
 
@@ -138,11 +138,9 @@ def _check_social_cooldown(agent, target_name: str, sim_time: float) -> bool:
         return True
     return False
 
-import re
-
 def parse_tool_call(tool_call_str: str) -> tuple:
     try:
-        # 1. Isolate the <tool_call> block, ignoring the <think> reasoning above it
+        # 1. Isolate the <tool_call> block, safely ignoring <think> or surrounding text
         call_match = re.search(r'<tool_call>(.*?)</tool_call>', tool_call_str, re.DOTALL)
         if not call_match:
             return "Parse error: No <tool_call> tags found.", {}

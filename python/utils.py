@@ -3,11 +3,12 @@ import os
 import subprocess
 import tempfile
 import jinja2
+import re
 
-from python.config import (PROMPTS_DIR, TOOLS_PATH, MAX_NEW_TOKENS, CHARS_PER_TOKEN, CONTEXT_SIZE)
-from python.locations import get_distance, LOCATIONS
+from config import (PROMPTS_DIR, TOOLS_PATH, MAX_NEW_TOKENS, CHARS_PER_TOKEN, CONTEXT_SIZE)
+from locations import get_distance, LOCATIONS
 
-# Point directly to the raw compiled C++ binary
+# Point directly to the raw compiled C++ binary in Colab
 LLAMA_CLI_PATH = "/content/llama.cpp/build/bin/llama-cli"
 MODEL_PATH = "/content/models/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
 
@@ -44,9 +45,9 @@ def build_messages(agent_id: int, world, notifications: str, failed_calls: int) 
         if os.path.exists(common_path):
             with open(common_path, encoding="utf-8") as f:
                 common = f.read().strip()
-                # IMPORTANT: Since the Jinja template provides XML instructions, 
-                # we MUST strip the JSON instructions from common_prompt just like the original code did.
-                common = common.replace("You MUST reply with EXACTLY ONE tool call in this exact format:\n\n<tool_call>{\"name\": \"tool_name\", \"arguments\": {\"param\": \"value\"}}</tool_call>", "")
+                # Use regex to strip the old JSON formatting instruction safely 
+                # since the Jinja template will enforce XML tags.
+                common = re.sub(r'You MUST reply with EXACTLY ONE tool call.*?</tool_call>', '', common, flags=re.DOTALL)
 
         for candidate in (agent.name.lower(), agent.name, agent.name.capitalize()):
             fpath = os.path.join(PROMPTS_DIR, f"{candidate}.txt")
@@ -55,7 +56,7 @@ def build_messages(agent_id: int, world, notifications: str, failed_calls: int) 
                     role = f.read().strip()
                 break
 
-        agent.system_prompt = f"{common}\n\n{role}"
+        agent.system_prompt = f"{common}\n\n{role}".strip()
 
     proximity_list = []
     for other_id, other in world.agents.items():
@@ -98,11 +99,11 @@ Inventory:     {inventory_str}
 
 
 def call_server(messages: list) -> tuple:
-    # 1. Load the tools dict
+    # 1. Load the tools dictionary
     with open(TOOLS_PATH, encoding="utf-8") as f:
         tools_list = json.load(f)["tools"]
 
-    # 2. Render the prompt through your template.jinja
+    # 2. Render the prompt through template.jinja exactly like the server would have
     template = jinja_env.get_template("template.jinja")
     prompt_text = template.render(
         messages=messages,
@@ -110,25 +111,25 @@ def call_server(messages: list) -> tuple:
         add_generation_prompt=True
     )
     
-    # 3. Write it to a temp file so we don't hit command line length limits
+    # 3. Write prompt to a temp file to prevent OS command-line string limits
     with tempfile.NamedTemporaryFile(mode="w", delete=False, encoding="utf-8") as f:
         f.write(prompt_text)
         temp_path = f.name
         
-        cmd = [
+    cmd = [
         LLAMA_CLI_PATH,
         "-m", MODEL_PATH,
-        "-c", str(CONTEXT_SIZE),      # 262144 from config
-        "-n", str(MAX_NEW_TOKENS),    # 128000 from config
+        "-c", str(CONTEXT_SIZE),      # 262144
+        "-n", str(MAX_NEW_TOKENS),    # 128000
         "--temp", "0.7",
         "--top-p", "0.95",
         "-ngl", "999",                # Full GPU offload
-        "--flash-attn",               # Critical for long context speed
-        "-ctk", "q8_0",               # Compress K-cache to 8-bit (Saves ~4GB VRAM)
-        "-ctv", "q8_0",               # Compress V-cache to 8-bit (Saves ~4GB VRAM)
+        "--flash-attn",               # Mandatory for long context
+        "-ctk", "q8_0",               # Compress K-cache to 8-bit to prevent T4 OOM
+        "-ctv", "q8_0",               # Compress V-cache to 8-bit to prevent T4 OOM
         "-f", temp_path,              # Pass prompt via file
-        "--no-display-prompt",        # Only output what the AI generates
-        "--log-disable"               # Disable C++ engine info logs
+        "--no-display-prompt",        # Only return the AI's generated output
+        "--log-disable"               # Silence C++ backend info
     ]
     
     try:
@@ -136,10 +137,7 @@ def call_server(messages: list) -> tuple:
         output = result.stdout.strip()
         output = output.replace("<|im_end|>", "").strip()
         
-        # FIX FOR THINKING TAGS: 
-        # The jinja template ends the prompt with `<think>\n`.
-        # Therefore, the model's generated output will NOT include the opening `<think>`.
-        # We must prepend it, so when it is saved to agent.chat_history, it stays intact.
+        # Restore the <think> tag removed by the jinja prompt structure
         if not output.startswith("<think>"):
             output = f"<think>\n{output}"
         
