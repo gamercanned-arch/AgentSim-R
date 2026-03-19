@@ -12,7 +12,6 @@ from config import (
     CONTEXT_SIZE, CONTEXT_FILL_RATIO,
 )
 
-
 def run_tick(world) -> bool:
     alive_agents = [a for a in world.agents.values() if a.alive]
     if not alive_agents:
@@ -57,10 +56,11 @@ def run_tick(world) -> bool:
     agent.total_prompt_tokens = prompt_tokens + generated_tokens
 
     if generated.startswith("[SERVER ERROR]"):
-        agent.failed_calls += 1
-        agent.busy_until = world.sim_time + 60.0 
-        if agent.chat_history: agent.chat_history.pop()
-        return False
+        # LOUD CRASH: Stop the simulation and print the exact error
+        print(f"\n🚨 CRITICAL AI ENGINE CRASH 🚨")
+        print(f"Agent: {agent.name}")
+        print(f"Details:\n{generated}")
+        raise RuntimeError("llama-cli crashed. Check the output above for the exact C++ error.")
 
     agent.pending_notifications.clear()
     agent.chat_history.append({"role": "assistant", "content": generated})
@@ -69,8 +69,6 @@ def run_tick(world) -> bool:
 
     agent.last_action_result = result
     agent.busy_until = world.sim_time + time_cost
-    
-    # Track parse errors vs logic errors for the user prompt
     agent.last_parse_error = result.startswith("Parse error")
 
     if success:
@@ -96,24 +94,16 @@ def run_tick(world) -> bool:
 
     return False
 
-
 def _apply_passive_updates(agent, world):
-    # ── aging ──
     agent.hours_lived += 1
     if agent.hours_lived % SIM_HOURS_PER_YEAR == 0:
         agent.age += 1
         agent.pending_notifications.append(f"Happy birthday! You are now {agent.age} years old.")
 
-    # ── energy decay ──
     agent.energy = max(0.0, agent.energy - 2.0)
-
-    # ── hunger ──
     agent.hunger = min(100.0, agent.hunger + 5.0)
-
-    # ── expense decay ──
     agent.expenses = agent.expenses * 0.99  
 
-    # ── health ──
     age_factor = math.exp(0.01 * agent.age)
     energy_penalty = 0.0 if agent.energy > 10.0 else 0.5
     delta_health = (
@@ -122,7 +112,6 @@ def _apply_passive_updates(agent, world):
     ) * age_factor * 0.02
     agent.health = max(0.0, min(100.0, agent.health + delta_health))
 
-    # ── happiness ──
     eps        = 1.0
     rel_scaled = min(100.0, (agent.relationships / 5.0) * 100.0)
     happiness_target = (
@@ -132,11 +121,9 @@ def _apply_passive_updates(agent, world):
     )
     agent.happiness = max(0.0, min(100.0, agent.happiness * 0.7 + happiness_target * 0.3))
 
-    # ── stress (Fixed Friendship Penalty) ──
     w1, w2, w3  = 1.0, 2.0, 0.5
     alpha, beta = 0.01, 0.001
     
-    # Punish extreme loneliness (<3) and extreme crowding (>10), sweet spot is 3-10
     loneliness = max(0.0, 3.0 - agent.relationships) ** 2
     crowding   = max(0.0, agent.relationships - 10.0) * 2.0
     rel_tension = w1 * (loneliness + crowding)
@@ -155,7 +142,6 @@ def _apply_passive_updates(agent, world):
     )
     agent.stress = max(0.0, min(100.0, agent.stress * 0.7 + stress_target * 0.3))
 
-    # ── death check ──
     if agent.health <= 0.0:
         agent.alive = False
         log_death(agent)

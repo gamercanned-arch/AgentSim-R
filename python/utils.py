@@ -70,7 +70,6 @@ def build_messages(agent_id: int, world, notifications: str, failed_calls: int) 
     pending_reqs = [f"{k.capitalize()} wants to be '{v}'" for k, v in agent.pending_status_requests.items()]
     pending_str = ", ".join(pending_reqs) if pending_reqs else "None"
     
-    # Extract Context Menus for the Agent
     valid_places = ", ".join(sorted(LOCATIONS.keys()))
     valid_foods = ", ".join(sorted([k for k in ITEM_CATALOG["food"].keys()]))
     valid_items = ", ".join(sorted([k for cat, items in ITEM_CATALOG.items() for k in items.keys() if cat != "food"]))
@@ -96,8 +95,7 @@ Valid Locations (for move_to): {valid_places}
 Food Menu (for eat_food): {valid_foods}
 Item Catalog (for buy_item): {valid_items}"""
 
-    # Only show the syntax warning if the LAST error was a true parsing/formatting failure
-    if failed_calls > 0 and agent.last_parse_error:
+    if failed_calls > 0 and getattr(agent, 'last_parse_error', False):
         user_message_content += "\n\n[SYSTEM WARNING]: Your previous output failed to parse. Make sure to use the <tool_call><function=...><parameter=...></parameter></function></tool_call> format exactly."
 
     agent.chat_history.append({"role": "user", "content": user_message_content})
@@ -150,7 +148,11 @@ def call_server(messages: list) -> tuple:
         return output, prompt_tokens, gen_tokens
         
     except subprocess.CalledProcessError as e:
-        return f"[SERVER ERROR] CLI Failed: {e.stderr}", 0, 0
+        # LOUD CRASH CAPTURE
+        error_msg = f"[SERVER ERROR] CLI Failed (Return Code {e.returncode}):\nSTDOUT: {e.stdout}\nSTDERR: {e.stderr}"
+        return error_msg, 0, 0
+    except Exception as e:
+        return f"[SERVER ERROR] System Exception: {str(e)}", 0, 0
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)

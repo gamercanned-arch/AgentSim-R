@@ -8,8 +8,6 @@ from scheduler import run_tick
 from locations import LOCATIONS
 from logger import log_global
 
-
-# Initial baseline states for each agent's role
 _STARTING_PROFILES = {
     "Alex":   {"wage": 50,  "money": 5000,  "home": "Small House"},
     "Jamie":  {"wage": 60,  "money": 6000,  "home": "Apartment"},
@@ -19,13 +17,11 @@ _STARTING_PROFILES = {
     "Ethan":  {"wage": 100, "money": 10000, "home": "Luxury House"},
 }
 
-
 def main():
     random.seed(RANDOM_SEED)
     np.random.seed(RANDOM_SEED)
 
     world = WorldState()
-
     names = ["Alex", "Jamie", "Taylor", "Jordan", "Mia", "Ethan"]
     ages  = [28,      35,      21,       39,       41,    30]
 
@@ -33,22 +29,17 @@ def main():
         agent = AgentState(i, names[i], ages[i])
         prof  = _STARTING_PROFILES[names[i]]
         
-        # Economic asset assignment
         home_item = prof["home"]
         agent.current_home = home_item
         agent.owned_locations.append(home_item)
         
-        # Physical world assignment
         home_loc_name = f"Home_{names[i]}"
         agent.location = home_loc_name
         agent.x, agent.y = LOCATIONS.get(home_loc_name, (0.0, 0.0))
         
         agent.hourly_wage = prof["wage"]
         agent.money       = prof["money"]
-        
-        # Staggered initialization so they don't all act at identically t=0
         agent.busy_until = random.uniform(0, 60)
-
         world.agents[i]  = agent
 
     context_limit = int(CONTEXT_SIZE * CONTEXT_FILL_RATIO)
@@ -63,50 +54,47 @@ def main():
     alive = N_AGENTS
     start_wall_time = time.time()
 
-    while True:
-        # Check real-world time limit
-        elapsed_minutes = (time.time() - start_wall_time) / 60.0
-        if elapsed_minutes >= MAX_RUNTIME_MINUTES:
-            print(f"\n[TIME LIMIT REACHED] Simulation ran for {elapsed_minutes:.1f} minutes. Ending gracefully.")
-            break
+    # The Try-Except catches your Ctrl+C and gracefully moves to the logging phase
+    try:
+        while True:
+            elapsed_minutes = (time.time() - start_wall_time) / 60.0
+            if elapsed_minutes >= MAX_RUNTIME_MINUTES:
+                print(f"\n[TIME LIMIT REACHED] Simulation ran for {elapsed_minutes:.1f} minutes. Ending gracefully.")
+                break
 
-        context_full = run_tick(world)
-        tick += 1
+            context_full = run_tick(world)
+            tick += 1
+            alive = sum(1 for a in world.agents.values() if a.alive)
 
-        alive = sum(1 for a in world.agents.values() if a.alive)
+            if tick % 25 == 0:
+                max_tokens = max(a.total_prompt_tokens for a in world.agents.values())
+                pct = (max_tokens / context_limit) * 100.0
+                print(
+                    f"Tick {tick:4d} | "
+                    f"Sim time: {world.sim_time/3600:.1f}h | "
+                    f"Alive: {alive}/{N_AGENTS} | "
+                    f"Market: ${world.market_price:.2f} | "
+                    f"Context: {pct:.1f}% | "
+                    f"Wall Clock: {elapsed_minutes:.1f}/{MAX_RUNTIME_MINUTES}m"
+                )
 
-        # progress report every 25 turns taken
-        if tick % 25 == 0:
-            max_tokens = max(a.total_prompt_tokens for a in world.agents.values())
-            pct = (max_tokens / context_limit) * 100.0
-            print(
-                f"Tick {tick:4d} | "
-                f"Sim time: {world.sim_time/3600:.1f}h | "
-                f"Alive: {alive}/{N_AGENTS} | "
-                f"Market: ${world.market_price:.2f} | "
-                f"Context: {pct:.1f}% | "
-                f"Wall Clock: {elapsed_minutes:.1f}/{MAX_RUNTIME_MINUTES}m"
-            )
+            if alive == 0:
+                print("All agents have died. Ending simulation.")
+                break
 
-        if alive == 0:
-            print("All agents have died. Ending simulation.")
-            break
+            if context_full:
+                print(f"Context window approaching full. Ending simulation.")
+                break
 
-        if context_full:
-            print(
-                f"Context window approaching full after {tick} ticks "
-                f"({world.sim_time/3600:.1f} sim-hours). Ending simulation."
-            )
-            break
+    except KeyboardInterrupt:
+        print("\n[USER ABORTED] You pressed Stop. Saving final data and writing logs...")
+    except Exception as e:
+        print(f"\n[FATAL ERROR] {str(e)}")
 
-    # final token usage report
     print("\n=== Final Token Usage ===")
     for agent in world.agents.values():
         pct = (agent.total_prompt_tokens / CONTEXT_SIZE) * 100.0
-        print(
-            f"  {agent.name:8s}: {agent.total_prompt_tokens:>8,} tokens "
-            f"({pct:.1f}% of total max context)"
-        )
+        print(f"  {agent.name:8s}: {agent.total_prompt_tokens:>8,} tokens ({pct:.1f}% of total max context)")
 
     log_global({
         "simulation_complete": True,
@@ -125,7 +113,6 @@ def main():
         },
     })
     print(f"\nSimulation complete. Ticks: {tick}, Alive: {alive}")
-
 
 if __name__ == "__main__":
     main()
