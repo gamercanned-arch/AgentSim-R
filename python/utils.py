@@ -7,15 +7,13 @@ import re
 
 from config import (PROMPTS_DIR, TOOLS_PATH, MAX_NEW_TOKENS, CHARS_PER_TOKEN, CONTEXT_SIZE)
 from locations import get_distance, LOCATIONS
+from tools import ITEM_CATALOG
 
-# Point directly to the raw compiled C++ binary in Colab
 LLAMA_CLI_PATH = "/content/llama.cpp/build/bin/llama-cli"
 MODEL_PATH = "/content/models/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
 
-# Set up the Jinja2 environment for your custom template
 jinja_env = jinja2.Environment(loader=jinja2.FileSystemLoader(PROMPTS_DIR))
 
-# The template uses raise_exception, so we must provide a Python equivalent
 def raise_exception(msg):
     raise ValueError(msg)
 jinja_env.globals['raise_exception'] = raise_exception
@@ -45,8 +43,6 @@ def build_messages(agent_id: int, world, notifications: str, failed_calls: int) 
         if os.path.exists(common_path):
             with open(common_path, encoding="utf-8") as f:
                 common = f.read().strip()
-                # Use regex to strip the old JSON formatting instruction safely 
-                # since the Jinja template will enforce XML tags.
                 common = re.sub(r'You MUST reply with EXACTLY ONE tool call.*?</tool_call>', '', common, flags=re.DOTALL)
 
         for candidate in (agent.name.lower(), agent.name, agent.name.capitalize()):
@@ -73,6 +69,11 @@ def build_messages(agent_id: int, world, notifications: str, failed_calls: int) 
     hour_of_day = int((world.sim_time / 3600) % 24)
     pending_reqs = [f"{k.capitalize()} wants to be '{v}'" for k, v in agent.pending_status_requests.items()]
     pending_str = ", ".join(pending_reqs) if pending_reqs else "None"
+    
+    # Extract Context Menus for the Agent
+    valid_places = ", ".join(sorted(LOCATIONS.keys()))
+    valid_foods = ", ".join(sorted([k for k in ITEM_CATALOG["food"].keys()]))
+    valid_items = ", ".join(sorted([k for cat, items in ITEM_CATALOG.items() for k in items.keys() if cat != "food"]))
 
     user_message_content = f"""Result of previous action: {agent.last_action_result}
 
@@ -88,9 +89,15 @@ Pending Relationship Requests: {pending_str}
 Inventory:     {inventory_str}
 
 === MARKET ===
-{_market_summary(world)}"""
+{_market_summary(world)}
 
-    if failed_calls > 0:
+=== REFERENCE MENUS ===
+Valid Locations (for move_to): {valid_places}
+Food Menu (for eat_food): {valid_foods}
+Item Catalog (for buy_item): {valid_items}"""
+
+    # Only show the syntax warning if the LAST error was a true parsing/formatting failure
+    if failed_calls > 0 and agent.last_parse_error:
         user_message_content += "\n\n[SYSTEM WARNING]: Your previous output failed to parse. Make sure to use the <tool_call><function=...><parameter=...></parameter></function></tool_call> format exactly."
 
     agent.chat_history.append({"role": "user", "content": user_message_content})
@@ -99,11 +106,9 @@ Inventory:     {inventory_str}
 
 
 def call_server(messages: list) -> tuple:
-    # 1. Load the tools dictionary
     with open(TOOLS_PATH, encoding="utf-8") as f:
         tools_list = json.load(f)["tools"]
 
-    # 2. Render the prompt through template.jinja exactly like the server would have
     template = jinja_env.get_template("template.jinja")
     prompt_text = template.render(
         messages=messages,
@@ -111,7 +116,6 @@ def call_server(messages: list) -> tuple:
         add_generation_prompt=True
     )
     
-    # 3. Write prompt to a temp file to prevent OS command-line string limits
     with tempfile.NamedTemporaryFile(mode="w", delete=False, encoding="utf-8") as f:
         f.write(prompt_text)
         temp_path = f.name
@@ -119,17 +123,17 @@ def call_server(messages: list) -> tuple:
     cmd = [
         LLAMA_CLI_PATH,
         "-m", MODEL_PATH,
-        "-c", str(CONTEXT_SIZE),      # 262144
-        "-n", str(MAX_NEW_TOKENS),    # 128000
+        "-c", str(CONTEXT_SIZE),      
+        "-n", str(MAX_NEW_TOKENS),    
         "--temp", "0.7",
         "--top-p", "0.95",
-        "-ngl", "999",                # Full GPU offload
-        "--flash-attn",               # Mandatory for long context
-        "-ctk", "q8_0",               # Compress K-cache to 8-bit to prevent T4 OOM
-        "-ctv", "q8_0",               # Compress V-cache to 8-bit to prevent T4 OOM
-        "-f", temp_path,              # Pass prompt via file
-        "--no-display-prompt",        # Only return the AI's generated output
-        "--log-disable"               # Silence C++ backend info
+        "-ngl", "999",                
+        "--flash-attn",               
+        "-ctk", "q8_0",               
+        "-ctv", "q8_0",               
+        "-f", temp_path,              
+        "--no-display-prompt",        
+        "--log-disable"               
     ]
     
     try:
@@ -137,7 +141,6 @@ def call_server(messages: list) -> tuple:
         output = result.stdout.strip()
         output = output.replace("<|im_end|>", "").strip()
         
-        # Restore the <think> tag removed by the jinja prompt structure
         if not output.startswith("<think>"):
             output = f"<think>\n{output}"
         

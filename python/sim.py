@@ -1,7 +1,8 @@
 import random
+import time
 import numpy as np
 
-from config import N_AGENTS, RANDOM_SEED, CONTEXT_SIZE, CONTEXT_FILL_RATIO
+from config import N_AGENTS, RANDOM_SEED, CONTEXT_SIZE, CONTEXT_FILL_RATIO, MAX_RUNTIME_MINUTES
 from state import WorldState, AgentState
 from scheduler import run_tick
 from locations import LOCATIONS
@@ -54,13 +55,21 @@ def main():
     print(
         f"AgentSim-R Phase 1 – starting simulation\n"
         f"Context limit: {CONTEXT_SIZE:,} tokens "
-        f"(stopping at {CONTEXT_FILL_RATIO*100:.0f}% = {context_limit:,} tokens)"
+        f"(stopping at {CONTEXT_FILL_RATIO*100:.0f}% = {context_limit:,} tokens)\n"
+        f"Real-world time limit: {MAX_RUNTIME_MINUTES} minutes"
     )
 
     tick  = 0
     alive = N_AGENTS
+    start_wall_time = time.time()
 
     while True:
+        # Check real-world time limit
+        elapsed_minutes = (time.time() - start_wall_time) / 60.0
+        if elapsed_minutes >= MAX_RUNTIME_MINUTES:
+            print(f"\n[TIME LIMIT REACHED] Simulation ran for {elapsed_minutes:.1f} minutes. Ending gracefully.")
+            break
+
         context_full = run_tick(world)
         tick += 1
 
@@ -75,7 +84,8 @@ def main():
                 f"Sim time: {world.sim_time/3600:.1f}h | "
                 f"Alive: {alive}/{N_AGENTS} | "
                 f"Market: ${world.market_price:.2f} | "
-                f"Context: {pct:.1f}% of allowed limit"
+                f"Context: {pct:.1f}% | "
+                f"Wall Clock: {elapsed_minutes:.1f}/{MAX_RUNTIME_MINUTES}m"
             )
 
         if alive == 0:

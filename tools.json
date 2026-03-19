@@ -15,10 +15,10 @@
       "description": "Buy an item. Housing moves you in. Services are consumed immediately.",
       "params": ["item"]
     },
-    {
+        {
       "name": "work_job",
-      "description": "Perform work to earn money. Location-bound jobs require proximity.",
-      "params": ["jobname"]
+      "description": "Perform work to earn money. Specify how many 'hours' you want to work (1 to 12). Location-bound jobs require proximity.",
+      "params": ["jobname", "hours"]
     },
     {
       "name": "seek_medicalcare",
@@ -27,12 +27,12 @@
     },
     {
       "name": "get_education",
-      "description": "Study to increase education level and directly boost your hourly wage. Requires proximity to School or Library.",
+      "description": "Study to increase education level and directly boost your hourly wage. Requires proximity to School or Library. Takes 8 hours.",
       "params": ["type"]
     },
     {
       "name": "move_to",
-      "description": "Move to a named location.",
+      "description": "Move to a named location. Having a vehicle speeds this up.",
       "params": ["place"]
     },
     {
@@ -47,7 +47,7 @@
     },
     {
       "name": "interact_with",
-      "description": "Physically interact with a person (within 20m).",
+      "description": "Physically interact with a person (within 20m) or an object.",
       "params": ["person_or_object", "action"]
     },
     {

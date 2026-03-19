@@ -5,7 +5,6 @@ from state import WorldState
 from locations import get_distance, LOCATIONS
 
 # ── item catalog ─────────────────────────────────────────────────────
-
 ITEM_CATALOG = {
     "food": {
         "Coffee": 5, "Sandwich": 8, "Meal": 15, "Pizza": 12,
@@ -140,14 +139,16 @@ def _check_social_cooldown(agent, target_name: str, sim_time: float) -> bool:
 
 def parse_tool_call(tool_call_str: str) -> tuple:
     try:
-        # 1. Isolate the <tool_call> block, safely ignoring <think> or surrounding text
-        call_match = re.search(r'<tool_call>(.*?)</tool_call>', tool_call_str, re.DOTALL)
-        if not call_match:
+        # Strip <think> blocks before parsing to prevent matching hypothetical plans
+        clean_str = re.sub(r'<think>.*?</think>', '', tool_call_str, flags=re.DOTALL)
+        
+        # Grab the last tool call to ensure we get their final decision
+        matches = list(re.finditer(r'<tool_call>(.*?)</tool_call>', clean_str, re.DOTALL))
+        if not matches:
             return "Parse error: No <tool_call> tags found.", {}
             
-        block = call_match.group(1)
+        block = matches[-1].group(1)
         
-        # 2. Extract the function name
         func_match = re.search(r'<function=([^>]+)>(.*?)</function>', block, re.DOTALL)
         if not func_match:
             return "Parse error: No <function=name> tag found.", {}
@@ -155,13 +156,10 @@ def parse_tool_call(tool_call_str: str) -> tuple:
         name = func_match.group(1).strip()
         params_block = func_match.group(2)
         
-        # 3. Extract the parameters
         args = {}
         param_matches = re.finditer(r'<parameter=([^>]+)>(.*?)</parameter>', params_block, re.DOTALL)
         for p in param_matches:
-            p_name = p.group(1).strip()
-            p_value = p.group(2).strip()
-            args[p_name] = p_value
+            args[p.group(1).strip()] = p.group(2).strip()
             
         return name, args
     except Exception as e:
@@ -175,7 +173,7 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
     if isinstance(name, str) and name.startswith("Parse error"):
         return name, False, 60
     if not name:
-        return "No tool name found.", False, 60
+        return "Parse error: No tool name found.", False, 60
 
     agent = world.agents.get(agent_id)
     if not agent or not agent.alive:
@@ -190,7 +188,7 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
         "talk_to":          300,
         "interact_with":    180,
         "seek_medicalcare": 600,
-        "get_education":   3600,
+        "get_education":  28800,  # 8 hours
         "call_person":       60,
         "change_status":     30,
         "attack_person":     60,
@@ -200,17 +198,14 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
     }
     
     time_cost = time_costs.get(name, 300)
-    agent.last_action_time = world.sim_time + time_cost
 
     # ── sleep ────────────────────────────────────────────────────────
     if name == "sleep":
         hours = args.get("hours", 8)
-        try:
-            hours = float(hours)
-        except (ValueError, TypeError):
-            hours = 8.0
+        try: hours = float(hours)
+        except (ValueError, TypeError): hours = 8.0
         hours = max(1.0, min(12.0, hours))
-        sleep_cost = int(hours * 3600)
+        time_cost = int(hours * 3600)
         
         agent.energy = min(100.0, agent.energy + (hours * 10.0))
         agent.stress = max(0.0, agent.stress - (hours * 2.0))
@@ -219,15 +214,25 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
         return (
             f"Slept for {hours:.1f} hours. "
             f"Energy: {agent.energy:.1f}, Health: {agent.health:.1f}."
-        ), True, sleep_cost
+        ), True, time_cost
 
-    # ── move_to ──────────────────────────────────────────────────────
+        # ── move_to ──────────────────────────────────────────────────────
     if name == "move_to":
         place = str(args.get("place", ""))[:50]
         if not place:
             return "No place specified.", False, 60
         if place not in LOCATIONS:
             return f"Unknown place: '{place}'. Check VALID LOCATIONS list.", False, 60
+            
+        # Vehicle Speed Logic (Safe check)
+        inv = agent.inventory
+        if inv.get("Luxury Car", 0) > 0 or inv.get("New Car", 0) > 0 or inv.get("Used Car", 0) > 0:
+            time_cost = 60
+        elif inv.get("Motorcycle", 0) > 0 or inv.get("Scooter", 0) > 0:
+            time_cost = 120
+        elif inv.get("Bicycle", 0) > 0:
+            time_cost = 180
+            
         agent.location   = place
         agent.x, agent.y = LOCATIONS[place]
         return f"Moved to {place}.", True, time_cost
@@ -282,11 +287,6 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
         price, category, _ = get_item_price(item)
         if price == 0:
             return f"Unknown item: '{item}'. Check ITEM CATALOG.", False, 60
-        if agent.money < price:
-            return (
-                f"Not enough money to buy {item}. "
-                f"Need ${price:.2f}, have ${agent.money:.2f}."
-            ), False, 60
 
         if is_housing_item(item):
             sell_price = 0.0
@@ -294,12 +294,18 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
             if old_home:
                 old_price, _, _ = get_item_price(old_home)
                 sell_price = old_price * 0.7
-                agent.money += sell_price
-                if old_home in agent.owned_locations:
-                    agent.owned_locations.remove(old_home)
 
+            if (agent.money + sell_price) < price:
+                return (
+                    f"Cannot afford {item}. Need ${price:.2f}, "
+                    f"have ${agent.money:.2f} + ${sell_price:.2f} equity."
+                ), False, 60
+
+            # Execute Housing Swap (No _record_expense for capital assets)
+            agent.money += sell_price
+            if old_home in agent.owned_locations:
+                agent.owned_locations.remove(old_home)
             agent.money -= price
-            _record_expense(agent, price)
             agent.owned_locations.append(item)
             agent.current_home = item
 
@@ -314,6 +320,12 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
                 f"Moved to {agent.location}."
             ), True, time_cost
 
+        if agent.money < price:
+            return (
+                f"Not enough money to buy {item}. "
+                f"Need ${price:.2f}, have ${agent.money:.2f}."
+            ), False, 60
+
         if is_consumable_item(item):
             agent.money -= price
             _record_expense(agent, price)
@@ -327,6 +339,7 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
                 f"Stress: {agent.stress:.1f}. Money: ${agent.money:.2f}."
             ), True, time_cost
 
+        # Everyday items, vehicles, electronics
         agent.money -= price
         _record_expense(agent, price)
         agent.inventory[item] = agent.inventory.get(item, 0) + 1
@@ -339,8 +352,7 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
     # ── buy_stock ────────────────────────────────────────────────────
     if name == "buy_stock":
         shares, err = _validate_shares(args.get("shares", 0))
-        if err:
-            return err, False, 60
+        if err: return err, False, 60
 
         price_per_share = world.market_price
         total_cost      = price_per_share * shares
@@ -351,7 +363,7 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
             ), False, 60
 
         agent.money -= total_cost
-        _record_expense(agent, total_cost)
+        # NO _record_expense for capital asset purchase to prevent Heart Attack Bug
 
         old_cost_basis = agent.last_known_price * agent.shares_owned
         agent.shares_owned += shares
@@ -369,8 +381,7 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
     # ── sell_stock ───────────────────────────────────────────────────
     if name == "sell_stock":
         shares, err = _validate_shares(args.get("shares", 0))
-        if err:
-            return err, False, 60
+        if err: return err, False, 60
         if agent.shares_owned < shares:
             return (
                 f"You only own {agent.shares_owned} share(s), "
@@ -399,8 +410,7 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
     # ── eat_food ─────────────────────────────────────────────────────
     if name == "eat_food":
         item = str(args.get("item", ""))[:50]
-        if not item:
-            return "No food item specified.", False, 60
+        if not item: return "No food item specified.", False, 60
 
         food_menu = ITEM_CATALOG.get("food", {})
         if item not in food_menu:
@@ -438,8 +448,7 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
             f"Ate {item} ({source}). "
             f"Hunger: {agent.hunger:.1f}, Health: {agent.health:.1f}."
         )
-        if cost > 0:
-            msg += f" Money: ${agent.money:.2f}."
+        if cost > 0: msg += f" Money: ${agent.money:.2f}."
         return msg, True, time_cost
 
     # ── work_job ─────────────────────────────────────────────────────
@@ -448,12 +457,15 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
             return "Too tired to work. Please use sleep tool to restore energy.", False, 60
             
         jobname = str(args.get("jobname", ""))[:50]
-        if not jobname:
-            return "No job specified.", False, 60
-
+        if not jobname: return "No job specified.", False, 60
+        
+        hours = float(args.get("hours", 1))
+        try: hours = float(hours)
+        except: hours = 1.0
+        hours = max(1.0, min(12.0, hours))
+        
+        time_cost = int(hours * 3600)
         job_lower = jobname.lower()
-        hours_worked = time_cost / 3600.0
-        pay = agent.hourly_wage * hours_worked
 
         workplace_map = {
             "nurse":    "Hospital",     "doctor":    "Hospital",
@@ -477,36 +489,32 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
                     f"({dist:.0f}m away)."
                 ), False, 60
 
+        pay = agent.hourly_wage * hours
         agent.job    = jobname
         agent.money += pay
-        agent.stress  = min(100.0, agent.stress  + 5.0)
-        agent.hunger  = min(100.0, agent.hunger  + 10.0)
-        agent.energy  = max(0.0, agent.energy - 15.0)
+        agent.stress  = min(100.0, agent.stress  + (5.0 * hours))
+        agent.hunger  = min(100.0, agent.hunger  + (10.0 * hours))
+        agent.energy  = max(0.0, agent.energy - (15.0 * hours))
 
         return (
-            f"Worked as {jobname} for {hours_worked:.1f}h. Earned ${pay:.2f}. "
+            f"Worked as {jobname} for {hours:.1f}h. Earned ${pay:.2f}. "
             f"Money: ${agent.money:.2f}, Energy: {agent.energy:.1f}, Stress: {agent.stress:.1f}."
         ), True, time_cost
 
     # ── attack_person ────────────────────────────────────────────────
     if name == "attack_person":
         target_name = str(args.get("person", ""))[:50]
-        if not target_name:
-            return "No target specified.", False, 60
+        if not target_name: return "No target specified.", False, 60
 
         target_agent = next(
-            (a for a in world.agents.values()
-             if a.name.lower() == target_name.lower() and a.alive),
+            (a for a in world.agents.values() if a.name.lower() == target_name.lower() and a.alive),
             None,
         )
-        if target_agent is None:
-            return f"Target '{target_name}' not found or not alive.", False, 60
-        if target_agent.id == agent.id:
-            return "You cannot attack yourself.", False, 60
+        if target_agent is None: return f"Target '{target_name}' not found or not alive.", False, 60
+        if target_agent.id == agent.id: return "You cannot attack yourself.", False, 60
 
         dist = get_distance((agent.x, agent.y), (target_agent.x, target_agent.y))
-        if dist > 20:
-            return f"Target too far ({dist:.0f}m). Must be within 20m.", False, 60
+        if dist > 20: return f"Target too far ({dist:.0f}m). Must be within 20m.", False, 60
 
         damage = random.uniform(5, 25)
         target_agent.health = max(0.0,   target_agent.health - damage)
@@ -538,26 +546,20 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
     # ── talk_to ──────────────────────────────────────────────────────
     if name == "talk_to":
         target_name = str(args.get("person", ""))[:50]
-        message     = str(args.get("message", "")).strip()[:300]  # sanitize & cap length
+        message     = str(args.get("message", "")).strip()[:300]
 
-        if not target_name:
-            return "No person specified.", False, 60
-        if not message:
-            return "Must provide a non-empty 'message'.", False, 60
+        if not target_name: return "No person specified.", False, 60
+        if not message: return "Must provide a non-empty 'message'.", False, 60
 
         target_agent = next(
-            (a for a in world.agents.values()
-             if a.name.lower() == target_name.lower() and a.alive),
+            (a for a in world.agents.values() if a.name.lower() == target_name.lower() and a.alive),
             None,
         )
-        if target_agent is None:
-            return f"'{target_name}' not found or not alive.", False, 60
-        if target_agent.id == agent.id:
-            return "You cannot talk to yourself.", False, 60
+        if target_agent is None: return f"'{target_name}' not found or not alive.", False, 60
+        if target_agent.id == agent.id: return "You cannot talk to yourself.", False, 60
 
         dist = get_distance((agent.x, agent.y), (target_agent.x, target_agent.y))
-        if dist > 50:
-            return f"{target_name} is too far ({dist:.0f}m). Must be within 50m.", False, 60
+        if dist > 50: return f"{target_name} is too far ({dist:.0f}m). Must be within 50m.", False, 60
 
         msg_lower = message.lower()
         if any(w in msg_lower for w in ["help", "sorry", "thanks", "please"]):
@@ -586,11 +588,8 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
                 agent.relationships        = max(0, agent.relationships - 1)
                 target_agent.relationships = max(0, target_agent.relationships - 1)
 
-        target_agent.pending_notifications.append(
-            f"{agent.name} said to you: \"{message}\""
-        )
-        
-        cooldown_msg = "" if rel_changed else " (Relationship unchanged: too soon since last interaction)."
+        target_agent.pending_notifications.append(f"{agent.name} said to you: \"{message}\"")
+        cooldown_msg = "" if rel_changed else " (Relationship unchanged: too soon)."
         return (
             f"Talked to {target_name}: \"{message}\". "
             f"Happiness: {agent.happiness:.1f}.{cooldown_msg}"
@@ -608,90 +607,50 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
                 ), False, 60
 
         cost = 50.0
-        if agent.money < cost:
-            return (
-                f"Cannot afford medical care. "
-                f"Need ${cost:.2f}, have ${agent.money:.2f}."
-            ), False, 60
+        if agent.money < cost: return f"Cannot afford medical care. Have ${agent.money:.2f}.", False, 60
 
         agent.money  -= cost
         _record_expense(agent, cost)
         agent.health  = min(100.0, agent.health  + 30.0)
         agent.stress  = max(0.0,   agent.stress  - 10.0)
 
-        return (
-            f"Received medical care. "
-            f"Health: {agent.health:.1f}, Stress: {agent.stress:.1f}, "
-            f"Money: ${agent.money:.2f}."
-        ), True, time_cost
+        return (f"Received medical care. Health: {agent.health:.1f}, Money: ${agent.money:.2f}."), True, time_cost
 
     # ── get_education ────────────────────────────────────────────────
     if name == "get_education":
-        if agent.energy < 10.0:
-            return "Too tired to study. Please sleep.", False, 60
+        if agent.energy < 10.0: return "Too tired to study. Please sleep.", False, 60
 
         edu_type = str(args.get("type", "")).strip()[:50]
-        if not edu_type:
-            return "No education type specified.", False, 60
+        if not edu_type: return "No education type specified.", False, 60
 
         edu_lower = edu_type.lower()
-
-        formal_keywords = [
-            "high", "bachelor", "college", "university",
-            "master", "phd", "doctorate",
-        ]
-        required_place = (
-            "School" if any(k in edu_lower for k in formal_keywords) else "Library"
-        )
+        formal_keywords = ["high", "bachelor", "college", "university", "master", "phd", "doctorate"]
+        required_place = "School" if any(k in edu_lower for k in formal_keywords) else "Library"
+        
         if required_place in LOCATIONS:
             dist = get_distance((agent.x, agent.y), LOCATIONS[required_place])
             if dist > 150:
-                return (
-                    f"Must be near {required_place} for {edu_type} "
-                    f"({dist:.0f}m away). Use move_to first."
-                ), False, 60
+                return f"Must be near {required_place} for {edu_type} ({dist:.0f}m away).", False, 60
 
-        edu_costs = {
-            "high_school":   500, "highschool":     500, "high": 500,
-            "bachelors":    2000, "bachelor": 2000, "college":        2000, "university": 2500,
-            "masters":      4000, "master":         4000,
-            "phd":          8000, "doctorate":      8000,
-            "technical":    1000, "certification":   800,
-            "online":        300, "course":          200,
-        }
-
-        cost     = 300
-        edu_gain = 10
-        for edu_key, edu_cost in edu_costs.items():
-            if edu_key in edu_lower:
-                cost = edu_cost
-                if "phd" in edu_key or "doctorate" in edu_key:
-                    edu_gain = 30
-                elif "master" in edu_key:
-                    edu_gain = 25
-                elif "bachelor" in edu_key or "college" in edu_key or "university" in edu_key:
-                    edu_gain = 20
-                elif "high" in edu_key:
-                    edu_gain = 15
-                break
+        cost = 300
+        edu_gain = 5
+        if "phd" in edu_lower or "doctorate" in edu_lower: cost = 8000; edu_gain = 15
+        elif "master" in edu_lower: cost = 4000; edu_gain = 12
+        elif "bachelor" in edu_lower or "college" in edu_lower: cost = 2000; edu_gain = 10
 
         if agent.money < cost:
-            return (
-                f"Cannot afford {edu_type}. "
-                f"Need ${cost:.2f}, have ${agent.money:.2f}."
-            ), False, 60
+            return f"Cannot afford {edu_type}. Need ${cost:.2f}, have ${agent.money:.2f}.", False, 60
 
         agent.money     -= cost
         _record_expense(agent, cost)
         agent.education  = min(100.0, agent.education + edu_gain)
-        agent.energy     = max(0.0, agent.energy - 10.0)
+        agent.energy     = max(0.0, agent.energy - 30.0) # Studying is exhausting
 
-        wage_increase = edu_gain * 0.2
+        wage_increase = edu_gain * 0.1 # Realistically scaled
         agent.hourly_wage += wage_increase
 
         return (
-            f"Completed {edu_type}. "
-            f"Education: {agent.education:.1f}. "
+            f"Studied {edu_type} for 8 hours. Education: {agent.education:.1f}. "
             f"Wage increased by ${wage_increase:.2f} to ${agent.hourly_wage:.2f}/hr."
         ), True, time_cost
 
@@ -699,137 +658,49 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
     if name == "call_person":
         target_name = str(args.get("person", ""))[:50]
         message     = str(args.get("message", "")).strip()[:300]
-
-        if not target_name:
-            return "No person specified.", False, 60
-        if not message:
-            return "Must provide a non-empty 'message'.", False, 60
-
+        if not target_name: return "No person specified.", False, 60
+        
         target_agent = next(
-            (a for a in world.agents.values()
-             if a.name.lower() == target_name.lower() and a.alive),
+            (a for a in world.agents.values() if a.name.lower() == target_name.lower() and a.alive),
             None,
         )
-        if target_agent is None:
-            return f"'{target_name}' not found or not alive.", False, 60
-        if target_agent.id == agent.id:
-            return "You cannot call yourself.", False, 60
-
-        call_cost = 1.0
-        if agent.money < call_cost:
-            return f"Cannot afford call (${call_cost:.2f}).", False, 60
-
-        agent.money -= call_cost
-        _record_expense(agent, call_cost)
-
-        msg_lower = message.lower()
-        if any(w in msg_lower for w in ["help", "sorry", "thanks", "please", "love", "miss"]):
-            happiness_delta, target_stress_delta = 4, 0
-        elif any(w in msg_lower for w in ["hate", "stupid", "shut up", "idiot", "fuck"]):
-            happiness_delta, target_stress_delta = -5, 10
-        else:
-            happiness_delta, target_stress_delta = 1, 0
-
-        if happiness_delta >= 0:
-            agent.stress = max(0.0, agent.stress - 3.0)
-        else:
-            agent.stress = min(100.0, agent.stress + 5.0)
-
-        agent.happiness        = _clamp(agent.happiness        + happiness_delta)
-        target_agent.happiness = _clamp(target_agent.happiness + happiness_delta)
-        target_agent.stress    = _clamp(target_agent.stress    + target_stress_delta)
-
-        rel_changed = False
-        if _check_social_cooldown(agent, target_name, world.sim_time):
-            rel_changed = True
-            if happiness_delta > 0:
-                agent.relationships        = min(25, agent.relationships + 1)
-                target_agent.relationships = min(25, target_agent.relationships + 1)
-            elif happiness_delta < 0:
-                agent.relationships        = max(0, agent.relationships - 1)
-                target_agent.relationships = max(0, target_agent.relationships - 1)
-
-        target_agent.pending_notifications.append(
-            f"{agent.name} called you: \"{message}\""
-        )
+        if target_agent is None: return f"'{target_name}' not found or not alive.", False, 60
         
-        cooldown_msg = "" if rel_changed else " (Relationship unchanged: too soon since last interaction)."
-        return (
-            f"Called {target_name}: \"{message}\". "
-            f"Happiness: {agent.happiness:.1f}, Stress: {agent.stress:.1f}.{cooldown_msg}"
-        ), True, time_cost
+        agent.money -= 1.0
+        _record_expense(agent, 1.0)
+        target_agent.pending_notifications.append(f"{agent.name} called you: \"{message}\"")
+        return f"Called {target_name}: \"{message}\".", True, time_cost
 
     # ── interact_with ────────────────────────────────────────────────
     if name == "interact_with":
         target = str(args.get("person_or_object", "")).strip()[:50]
         action = str(args.get("action", "generic")).lower()[:50]
-
-        if not target:
-            return "No person specified.", False, 60
+        if not target: return "No person or object specified.", False, 60
 
         target_agent = next(
-            (a for a in world.agents.values()
-             if a.name.lower() == target.lower() and a.alive),
+            (a for a in world.agents.values() if a.name.lower() == target.lower() and a.alive),
             None,
         )
 
         if target_agent:
-            if target_agent.id == agent.id:
-                return "You cannot interact with yourself.", False, 60
-
+            if target_agent.id == agent.id: return "You cannot interact with yourself.", False, 60
             dist = get_distance((agent.x, agent.y), (target_agent.x, target_agent.y))
-            if dist > 20:
-                return f"{target} is too far ({dist:.0f}m). Must be within 20m.", False, 60
+            if dist > 20: return f"{target} is too far ({dist:.0f}m).", False, 60
 
-            speaker_happiness = 2
             target_happiness  = 2
-            target_stress     = 0
             notification      = f"{agent.name} interacted with you ({action})."
-
             if action in ["hug", "hold_hand", "pat_back"]:
-                speaker_happiness = 5
-                if target_agent.relationships < 3:
-                    target_happiness = -5
-                    target_stress    = 12
-                    notification     = (
-                        f"{agent.name} tried to hug/hold you (felt uncomfortable)."
-                    )
-                else:
-                    target_happiness = 5
-                    notification     = f"{agent.name} hugged/held you."
-            elif action in ["wave", "smile", "high_five"]:
-                speaker_happiness = 3
-                target_happiness  = 3
-                notification      = f"{agent.name} waved/smiled at you."
+                if target_agent.relationships < 3: target_happiness = -5; notification = f"{agent.name} tried to hug/hold you (felt uncomfortable)."
+                else: target_happiness = 5; notification = f"{agent.name} hugged/held you."
             elif action in ["stare", "shove", "knock_shoulder"]:
-                speaker_happiness = -2
-                target_happiness  = -4
-                target_stress     = 8
-                notification      = f"{agent.name} {action}d you."
+                target_happiness  = -4; notification = f"{agent.name} {action}d you."
 
-            agent.happiness        = _clamp(agent.happiness        + speaker_happiness)
             target_agent.happiness = _clamp(target_agent.happiness + target_happiness)
-            target_agent.stress    = _clamp(target_agent.stress    + target_stress)
-
-            rel_changed = False
-            if _check_social_cooldown(agent, target, world.sim_time):
-                rel_changed = True
-                if speaker_happiness > 0 and target_happiness > 0:
-                    agent.relationships        = min(25, agent.relationships + 1)
-                    target_agent.relationships = min(25, target_agent.relationships + 1)
-                elif target_happiness < 0:
-                    agent.relationships        = max(0, agent.relationships - 1)
-                    target_agent.relationships = max(0, target_agent.relationships - 1)
-
             target_agent.pending_notifications.append(notification)
-            
-            cooldown_msg = "" if rel_changed else " (Relationship unchanged: too soon since last interaction)."
-            return (
-                f"Interacted with {target} ({action}). "
-                f"Happiness: {agent.happiness:.1f}.{cooldown_msg}"
-            ), True, time_cost
+            return f"Interacted with {target} ({action}).", True, time_cost
 
-        return f"Could not find '{target}' as a person.", False, 60
+        # Fallback for Objects
+        return f"You interacted with the object: {target} ({action}).", True, time_cost
 
     # ── change_status ────────────────────────────────────────────────
     if name == "change_status":
@@ -838,24 +709,8 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
         value    = str(args.get("value", ""))[:100]
 
         if person and rel_type:
-            target_agent = next(
-                (a for a in world.agents.values()
-                 if a.name.lower() == person.lower() and a.alive),
-                None,
-            )
-            if target_agent is None:
-                return f"Person '{person}' not found or not alive.", False, 60
-
-            dist = get_distance((agent.x, agent.y), (target_agent.x, target_agent.y))
-            if dist > 30:
-                return f"{person} is too far ({dist:.0f}m). Must be within 30m.", False, 60
-
-            valid_statuses = [
-                "single", "dating", "married", "divorced",
-                "widowed", "engaged", "complicated",
-            ]
-            if rel_type.lower() not in valid_statuses:
-                return f"Invalid status. Valid: {', '.join(valid_statuses)}.", False, 60
+            target_agent = next((a for a in world.agents.values() if a.name.lower() == person.lower() and a.alive), None)
+            if target_agent is None: return f"Person '{person}' not found.", False, 60
 
             req_key = person.lower()
             target_key = agent.name.lower()
@@ -864,21 +719,14 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
                 agent.relationships_status = rel_type.lower()
                 target_agent.relationships_status = rel_type.lower()
                 del agent.pending_status_requests[req_key]
-                
-                target_agent.pending_notifications.append(
-                    f"{agent.name} accepted your relationship status change to: {rel_type}."
-                )
+                target_agent.pending_notifications.append(f"{agent.name} accepted your status change to: {rel_type}.")
                 return f"Relationship status with {person} changed to: {rel_type}.", True, time_cost
             else:
                 target_agent.pending_status_requests[target_key] = rel_type.lower()
-                target_agent.pending_notifications.append(
-                    f"{agent.name} wants to change relationship status to: {rel_type}. "
-                    f"To accept, use change_status with person='{agent.name}' and type='{rel_type}'. "
-                    f"To deny, ignore it."
-                )
-                return f"Requested status change to '{rel_type}' with {person}. Waiting for them to accept.", True, time_cost
+                target_agent.pending_notifications.append(f"{agent.name} wants to change status to: {rel_type}.")
+                return f"Requested status change to '{rel_type}' with {person}.", True, time_cost
 
-        if value and not rel_type:
+        if value:
             agent.beliefs = value
             return f"Belief updated to: \"{value}\".", True, time_cost
 
