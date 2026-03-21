@@ -6,8 +6,7 @@ from utils import build_messages, call_server, is_market_open
 from tools import execute_tool, ITEM_CATALOG
 from locations import get_current_location_def
 from logger import log_agent, log_global, log_death, log_io
-from config import PASSIVE_TICK_SECONDS, TAX_AMOUNT
-from sim import BASE_STORE_INVENTORY
+from config import PASSIVE_TICK_SECONDS, TAX_AMOUNT, BASE_STORE_INVENTORY
 
 def run_tick(world) -> bool:
     alive_agents = [a for a in world.agents.values() if a.alive]

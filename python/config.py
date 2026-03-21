@@ -29,10 +29,16 @@ MAX_RUNTIME_MINUTES = float(os.environ.get("MAX_RUNTIME_MINUTES", 1440.0))
 MAX_INVENTORY = 20
 TAX_AMOUNT    = 50.0
 LLAMA_CLI_PATH = os.environ.get("LLAMA_CLI_PATH", "llama-cli")
-SUMMARIZER_MODEL_PATH = os.environ.get("SUMMARIZER_MODEL_PATH", r"C:\Users\abhik\Downloads\Huihui-Qwen3.5-0.8B-abliterated.Q4_K_M.gguf")
+SUMMARIZER_MODEL_PATH = os.environ.get("SUMMARIZER_MODEL_PATH", "models/qwen3.5-0.8b.gguf")
 
-# EDIT THIS TO CHANGE HOW THE SUMMARIZER "THINKS" AND "REMEMBERS"
-SUMMARIZER_PROMPT_TEMPLATE = """System: Compress the following logs into a dense, third-person summary. Focus and keep only major plot points, relationship changes, long-term goals, and financial/health impacts.
+# MOVED FROM sim.py TO PREVENT CIRCULAR IMPORTS
+BASE_STORE_INVENTORY = {
+    "Snacks": 200, "Water": 200, "Coffee": 100, "Sandwich": 100, "Pizza": 50, "Premium Meal": 30,
+    "Toothbrush": 20, "Clothes": 20, "Book": 20, "Art Supplies": 10, "Notebook": 30,
+    "Medicine": 50, "Vitamins": 50, "First aid kit": 20
+}
+
+SUMMARIZER_PROMPT_TEMPLATE = """System: Compress the following logs into a dense, third-person summary. Focus on, and keeo only major plot points, relationship changes, long-term goals, and financial/health impacts.
 Example 1 Input:
 [USER: Moved to Hospital. RESULT: Travelled to Hospital. USER: Used seek_medicalcare. RESULT: Health restored to 100, Money -$50.]
 Example 1 Output:

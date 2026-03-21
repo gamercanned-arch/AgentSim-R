@@ -6,18 +6,12 @@ import glob
 
 from config import (
     N_AGENTS, RANDOM_SEED, CONTEXT_SIZE, CONTEXT_FILL_RATIO, 
-    MAX_RUNTIME_MINUTES, CACHE_DIR, LOG_DIR
+    MAX_RUNTIME_MINUTES, CACHE_DIR, LOG_DIR, BASE_STORE_INVENTORY
 )
 from state import WorldState, AgentState
 from scheduler import run_tick
 from locations import get_location_by_name
 from logger import log_global
-
-BASE_STORE_INVENTORY = {
-    "Snacks": 200, "Water": 200, "Coffee": 100, "Sandwich": 100, "Pizza": 50, "Premium Meal": 30,
-    "Toothbrush": 20, "Clothes": 20, "Book": 20, "Art Supplies": 10, "Notebook": 30,
-    "Medicine": 50, "Vitamins": 50, "First aid kit": 20
-}
 
 _STARTING_PROFILES = {
     "Alex":   {"wage": 50,  "money": 5000,  "home": "Small House"},
