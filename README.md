@@ -23,7 +23,17 @@ AgentSim-R is a synthetic simulation consisting of `LM Agents`. It is a city-sca
 
 ## Running the Simulation
 
-See the companion Jupyter/Colab notebook: [run_sim.ipynb](./run_sim.ipynb)
+Run these:
+
+```Bash
+llama-server -m "C:\Users\user\OneDrive\Documents\Abhik\AgentSim-R\models\Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf" -c 131072 -ngl 999 -ctk q8_0 -ctv q8_0 --parallel 1 --slot-save-path "C:\Users\user\OneDrive\Documents\Abhik\AgentSim-R\cache"
+```
+
+(In this repository)
+```Bash
+cd python
+python/sim.py
+```
 
 > [!CAUTION]   
 > (contains setup, llama-server launch, simulation loop, and logging)
@@ -202,3 +212,16 @@ In Phase 1, the following six agents are initialized with realistic starting con
 | **Jordan** | Delivery Driver | 39 | $20 | $2000 | Apartment | Home_Jordan |
 | **Mia** | Teacher | 41 | $35 | $3500 | House | Home_Mia |
 | **Ethan** | Founder | 30 | $100 | $10000 | Luxury House | Home_Ethan |
+
+---
+---
+
+## Architectural Additions
+1. **Interactive State Machine (Exams & Jobs):** Agents engaging in high-yield activities must pass through a 3-step conversational flow. They must pick up job-specific props (e.g., Laptops, Stethoscopes) and answer MCQ challenges to receive payouts.
+2. **Rolling Memory (Subprocess Summarization):** A background `llama-cli` instance intercepts agent Context Windows using Few-Shot prompting, compressing their history iteratively to preserve 131k token length without losing long-term plot progression. Protects Turn 1 System Rules permanently. The prompt is highly configurable via `config.py`.
+3. **3D Hitboxes and Vision Nav-Mesh:** The map is no longer abstract. Buildings possess explicit `x,y,z` boundaries filled with 60+ real-world environmental props. Agents traverse the Z-axis using elevators and staircases using proximity-based vision queues.
+4. **Finite Macro-Economy:** The village stores operate on strict, finite inventories. Food and items run out and restock on a 7-day loop, forcing long-term survival planning.
+5. **Harsh Biologics & Weather:** Introduced exponential starvation damage, debt-stress multipliers, and real-time weather notifications that force agents to interact dynamically with the environment.
+6. **Strict Event Blocking (Do Not Disturb):** Agents who are sleeping or actively working exist in an uninterruptible event block, preventing logical ghosting and enforcing realistic temporal permanence. 
+
+---

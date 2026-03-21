@@ -1,158 +1,127 @@
 import json
 import os
-import subprocess
-import tempfile
+import urllib.request
+import urllib.error
 import jinja2
-import re
+import subprocess
 
-from config import (PROMPTS_DIR, TOOLS_PATH, MAX_NEW_TOKENS, CHARS_PER_TOKEN, CONTEXT_SIZE)
-from locations import get_distance, LOCATIONS
+from config import (PROMPTS_DIR, TOOLS_PATH, MAX_NEW_TOKENS, CHARS_PER_TOKEN, LLAMA_CLI_PATH, SUMMARIZER_MODEL_PATH, SUMMARIZER_PROMPT_TEMPLATE)
+from locations import get_distance_3d, get_current_location_def
 from tools import ITEM_CATALOG
 
-LLAMA_CLI_PATH = "/content/llama.cpp/build/bin/llama-cli"
-MODEL_PATH = "/content/models/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
-
+SERVER_URL = "http://127.0.0.1:8080"
 jinja_env = jinja2.Environment(loader=jinja2.FileSystemLoader(PROMPTS_DIR))
 
-def raise_exception(msg):
-    raise ValueError(msg)
-jinja_env.globals['raise_exception'] = raise_exception
+def _get_time_strings(sim_time: float, return_date=True):
+    total_minutes = int(sim_time // 60)
+    hour = (total_minutes // 60) % 24
+    minute = total_minutes % 60
+    day = (total_minutes // 1440) + 1
+    if return_date: return f"Day {day}, {hour:02d}:{minute:02d}"
+    return hour, minute
 
-def count_tokens(text: str) -> int:
-    return len(str(text)) // CHARS_PER_TOKEN
+def is_market_open(sim_time: float) -> bool:
+    h, m = _get_time_strings(sim_time, False)
+    if h > 9 or (h == 9 and m >= 30):
+        if h < 16: return True
+    return False
 
-def _market_summary(world) -> str:
-    price = world.market_price
-    window = world.price_history[-6:] if len(world.price_history) >= 6 else world.price_history[:]
-    trend_str = "  ".join(f"${p:.2f}" for p in window)
-    if len(window) >= 2:
-        delta = window[-1] - window[0]
-        pct = (delta / window[0]) * 100.0 if window[0] != 0 else 0.0
-        sign = "▲" if delta >= 0 else "▼"
-        momentum = f"{sign} {abs(pct):.2f}% over last {len(window)} hours"
-    else:
-        momentum = "insufficient history"
-    return f"Current price : ${price:.2f}\nRecent closes : {trend_str}\nMomentum      : {momentum}"
+def trigger_summarizer(agent):
+    if len(agent.chat_history) > 22:
+        turn_1 = agent.chat_history[:2]
+        chunk = agent.chat_history[2:22]
+        remainder = agent.chat_history[22:]
+        text_chunk = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in chunk])
+        
+        prompt = SUMMARIZER_PROMPT_TEMPLATE.format(text_chunk=text_chunk)
+        
+        try:
+            res = subprocess.run([LLAMA_CLI_PATH, "-m", SUMMARIZER_MODEL_PATH, "-p", prompt, "-n", "150", "--log-disable"], 
+                                 capture_output=True, text=True, timeout=30)
+            summary = res.stdout.strip()
+        except Exception as e:
+            summary = "Summary generation failed."
+
+        agent.chat_history = turn_1 + [{"role": "system", "content": f"[ROLLING MEMORY]: {summary}"}] + remainder
 
 def build_messages(agent_id: int, world, notifications: str, failed_calls: int) -> list:
     agent = world.agents[agent_id]
+    trigger_summarizer(agent) 
 
     if not agent.system_prompt:
-        common, role = "", ""
-        common_path = os.path.join(PROMPTS_DIR, "common_prompt.txt")
-        if os.path.exists(common_path):
-            with open(common_path, encoding="utf-8") as f:
-                common = f.read().strip()
-                common = re.sub(r'You MUST reply with EXACTLY ONE tool call.*?</tool_call>', '', common, flags=re.DOTALL)
+        role = ""
+        fpath = os.path.join(PROMPTS_DIR, f"{agent.name}.txt")
+        if os.path.exists(fpath):
+            with open(fpath, encoding="utf-8") as f: role = f.read().strip()
+        
+        agent.system_prompt = (
+            "You are a simulation agent.\nRULES:\n"
+            "- Tools cost time. Reply EXACTLY with one <tool_call>.\n"
+            "- Protect your Health, Energy, and Finances.\n"
+            "- Working/Studying is a 3-step interactive process: 1. Call work_job. 2. Use pick_item to grab the required tool. 3. Use interact_with to answer the scenario.\n"
+            "- Use the change_status tool to save your long-term goals into your Beliefs.\n"
+            f"- Your Role: {role}\n"
+        )
 
-        for candidate in (agent.name.lower(), agent.name, agent.name.capitalize()):
-            fpath = os.path.join(PROMPTS_DIR, f"{candidate}.txt")
-            if os.path.exists(fpath):
-                with open(fpath, encoding="utf-8") as f:
-                    role = f.read().strip()
-                break
-
-        agent.system_prompt = f"{common}\n\n{role}".strip()
-
-    proximity_list = []
-    for other_id, other in world.agents.items():
-        if other_id != agent_id and other.alive:
-            dist = get_distance((agent.x, agent.y), (other.x, other.y))
-            if dist < 200:
-                proximity_list.append(f"{other.name} ({dist:.0f}m)")
-    proximity = ", ".join(proximity_list) if proximity_list else "None nearby"
-
-    property_info = "Owned: " + ", ".join(agent.owned_locations) if agent.owned_locations else "Owned: None"
-    if agent.current_home: property_info += f", Home: {agent.current_home}"
-
-    inventory_str = ", ".join(f"{k}×{v}" for k, v in agent.inventory.items() if v > 0) or "empty"
-    hour_of_day = int((world.sim_time / 3600) % 24)
-    pending_reqs = [f"{k.capitalize()} wants to be '{v}'" for k, v in agent.pending_status_requests.items()]
-    pending_str = ", ".join(pending_reqs) if pending_reqs else "None"
+    prox = []
+    for o in world.agents.values():
+        if o.alive and o.id != agent.id:
+            d = get_distance_3d((agent.x, agent.y, agent.z), (o.x, o.y, o.z))
+            if d < 100:
+                is_busy = (o.busy_until > world.sim_time) or (o.task_state != "idle")
+                act = "BUSY: Do Not Disturb" if is_busy else "Available"
+                held = f" [Holding {o.currently_holding['item']}]" if o.currently_holding else ""
+                prox.append(f"{o.name} ({d:.0f}m) [{act}]{held}")
     
-    valid_places = ", ".join(sorted(LOCATIONS.keys()))
-    valid_foods = ", ".join(sorted([k for k in ITEM_CATALOG["food"].keys()]))
-    valid_items = ", ".join(sorted([k for cat, items in ITEM_CATALOG.items() for k in items.keys() if cat != "food"]))
+    loc_def = get_current_location_def(agent.x, agent.y, agent.z)
+    vision = ""
+    if loc_def and loc_def.interactables:
+        visible_objs = []
+        for obj in loc_def.interactables:
+            if abs(obj['z'] - agent.z) < 2:
+                if "target_z" in obj: 
+                    visible_objs.append(f"{obj['name']} (leads to Z={obj['target_z']})")
+                else: 
+                    visible_objs.append(obj['name'])
+        if visible_objs: vision = "Vision: " + ", ".join(visible_objs)
 
-    user_message_content = f"""Result of previous action: {agent.last_action_result}
+    inv_str = ", ".join([i['item'] for i in agent.inventory]) or "Empty"
+    held_str = agent.currently_holding['item'] if agent.currently_holding else "Nothing"
+    news = " | ".join(world.global_news[-3:]) if world.global_news else "None"
 
-=== YOUR CURRENT STATE ===
-Health={agent.health:.1f}, Energy={agent.energy:.1f}, Happiness={agent.happiness:.1f}, Stress={agent.stress:.1f}, Hunger={agent.hunger:.1f}
-Money=${agent.money:.2f}, Wage=${agent.hourly_wage:.2f}/hr, Job={agent.job}, Education={agent.education:.1f}
-Location:      {agent.location}
-{property_info}
-Nearby people: {proximity}
-Hour of day:   {hour_of_day:02d}:00
-Notifications: {notifications}
-Pending Relationship Requests: {pending_str}
-Inventory:     {inventory_str}
+    user_msg = f"""[RESULT]: {agent.last_action_result}
 
-=== MARKET ===
-{_market_summary(world)}
+[STATE]
+Time: {_get_time_strings(world.sim_time)} | Weather: {world.weather}
+Loc: {agent.location} (Z={agent.z})
+{vision}
+Health: {agent.health:.1f} | Energy: {agent.energy:.1f} | Hunger: {agent.hunger:.1f} | Stress: {agent.stress:.1f}
+Money: ${agent.money:.2f}
+Held: {held_str} | Inv: [{inv_str}]
+Beliefs/Goals: {agent.beliefs}
 
-=== REFERENCE MENUS ===
-Valid Locations (for move_to): {valid_places}
-Food Menu (for eat_food): {valid_foods}
-Item Catalog (for buy_item): {valid_items}"""
-
-    if failed_calls > 0 and getattr(agent, 'last_parse_error', False):
-        user_message_content += "\n\n[SYSTEM WARNING]: Your previous output failed to parse. Make sure to use the <tool_call><function=...><parameter=...></parameter></function></tool_call> format exactly."
-
-    agent.chat_history.append({"role": "user", "content": user_message_content})
-
+[ENV]
+Nearby: {', '.join(prox) or 'None'}
+News: {news}
+Notifs: {notifications}
+"""
+    agent.chat_history.append({"role": "user", "content": user_msg})
     return [{"role": "system", "content": agent.system_prompt}] + agent.chat_history
 
-
-def call_server(messages: list) -> tuple:
-    with open(TOOLS_PATH, encoding="utf-8") as f:
-        tools_list = json.load(f)["tools"]
-
+def call_server(messages: list, agent_id: int) -> tuple:
+    with open(TOOLS_PATH, encoding="utf-8") as f: tools_list = json.load(f)["tools"]
     template = jinja_env.get_template("template.jinja")
-    prompt_text = template.render(
-        messages=messages,
-        tools=tools_list,
-        add_generation_prompt=True
-    )
+    prompt_text = template.render(messages=messages, tools=tools_list, add_generation_prompt=True)
     
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, encoding="utf-8") as f:
-        f.write(prompt_text)
-        temp_path = f.name
-        
-    cmd = [
-        LLAMA_CLI_PATH,
-        "-m", MODEL_PATH,
-        "-c", str(CONTEXT_SIZE),      
-        "-n", str(MAX_NEW_TOKENS),    
-        "--temp", "0.7",
-        "--top-p", "0.95",
-        "-ngl", "999",                
-        "--flash-attn",               
-        "-ctk", "q8_0",               
-        "-ctv", "q8_0",               
-        "-f", temp_path,              
-        "--no-display-prompt",        
-        "--log-disable"               
-    ]
+    req = urllib.request.Request(f"{SERVER_URL}/completion", data=json.dumps({
+        "prompt": prompt_text, "n_predict": MAX_NEW_TOKENS, "temperature": 0.7, 
+        "top_p": 0.95, "stop": ["<|im_end|>"]
+    }).encode('utf-8'), headers={'Content-Type': 'application/json'})
     
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        output = result.stdout.strip()
-        output = output.replace("<|im_end|>", "").strip()
-        
-        if not output.startswith("<think>"):
-            output = f"<think>\n{output}"
-        
-        prompt_tokens = len(prompt_text) // CHARS_PER_TOKEN
-        gen_tokens = len(output) // CHARS_PER_TOKEN
-        
-        return output, prompt_tokens, gen_tokens
-        
-    except subprocess.CalledProcessError as e:
-        # LOUD CRASH CAPTURE
-        error_msg = f"[SERVER ERROR] CLI Failed (Return Code {e.returncode}):\nSTDOUT: {e.stdout}\nSTDERR: {e.stderr}"
-        return error_msg, 0, 0
-    except Exception as e:
-        return f"[SERVER ERROR] System Exception: {str(e)}", 0, 0
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        with urllib.request.urlopen(req) as res:
+            res_data = json.loads(res.read().decode('utf-8'))
+            out = res_data.get("content", "").strip()
+            if not out.startswith("<think>"): out = f"<think>\n{out}"
+            return out, 0, 0
+    except Exception as e: return f"[SERVER ERROR] {e}", 0, 0

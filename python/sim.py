@@ -1,12 +1,23 @@
 import random
 import time
 import numpy as np
+import os
+import glob
 
-from config import N_AGENTS, RANDOM_SEED, CONTEXT_SIZE, CONTEXT_FILL_RATIO, MAX_RUNTIME_MINUTES
+from config import (
+    N_AGENTS, RANDOM_SEED, CONTEXT_SIZE, CONTEXT_FILL_RATIO, 
+    MAX_RUNTIME_MINUTES, CACHE_DIR, LOG_DIR
+)
 from state import WorldState, AgentState
 from scheduler import run_tick
-from locations import LOCATIONS
+from locations import get_location_by_name
 from logger import log_global
+
+BASE_STORE_INVENTORY = {
+    "Snacks": 200, "Water": 200, "Coffee": 100, "Sandwich": 100, "Pizza": 50, "Premium Meal": 30,
+    "Toothbrush": 20, "Clothes": 20, "Book": 20, "Art Supplies": 10, "Notebook": 30,
+    "Medicine": 50, "Vitamins": 50, "First aid kit": 20
+}
 
 _STARTING_PROFILES = {
     "Alex":   {"wage": 50,  "money": 5000,  "home": "Small House"},
@@ -18,10 +29,20 @@ _STARTING_PROFILES = {
 }
 
 def main():
+    print("Sweeping old cache and log files for a clean Phase 1 Expansion start...")
+    for f in glob.glob(os.path.join(CACHE_DIR, "*.bin")):
+        try: os.remove(f)
+        except OSError: pass
+    for f in glob.glob(os.path.join(LOG_DIR, "*.*")):
+        try: os.remove(f)
+        except OSError: pass
+
     random.seed(RANDOM_SEED)
     np.random.seed(RANDOM_SEED)
 
     world = WorldState()
+    world.store_inventory = dict(BASE_STORE_INVENTORY)
+    
     names = ["Alex", "Jamie", "Taylor", "Jordan", "Mia", "Ethan"]
     ages  = [28,      35,      21,       39,       41,    30]
 
@@ -35,7 +56,12 @@ def main():
         
         home_loc_name = f"Home_{names[i]}"
         agent.location = home_loc_name
-        agent.x, agent.y = LOCATIONS.get(home_loc_name, (0.0, 0.0))
+        
+        loc_def = get_location_by_name(home_loc_name)
+        if loc_def:
+            agent.x = (loc_def.x_min + loc_def.x_max) / 2
+            agent.y = (loc_def.y_min + loc_def.y_max) / 2
+            agent.z = loc_def.z_min
         
         agent.hourly_wage = prof["wage"]
         agent.money       = prof["money"]
@@ -43,76 +69,33 @@ def main():
         world.agents[i]  = agent
 
     context_limit = int(CONTEXT_SIZE * CONTEXT_FILL_RATIO)
-    print(
-        f"AgentSim-R Phase 1 – starting simulation\n"
-        f"Context limit: {CONTEXT_SIZE:,} tokens "
-        f"(stopping at {CONTEXT_FILL_RATIO*100:.0f}% = {context_limit:,} tokens)\n"
-        f"Real-world time limit: {MAX_RUNTIME_MINUTES} minutes"
-    )
+    print(f"AgentSim-R Phase 1 Expansion starting...\nContext limit: {CONTEXT_SIZE:,}\nTime limit: {MAX_RUNTIME_MINUTES}m")
 
-    tick  = 0
-    alive = N_AGENTS
+    tick = 0
     start_wall_time = time.time()
 
-    # The Try-Except catches your Ctrl+C and gracefully moves to the logging phase
     try:
         while True:
             elapsed_minutes = (time.time() - start_wall_time) / 60.0
-            if elapsed_minutes >= MAX_RUNTIME_MINUTES:
-                print(f"\n[TIME LIMIT REACHED] Simulation ran for {elapsed_minutes:.1f} minutes. Ending gracefully.")
-                break
+            if elapsed_minutes >= MAX_RUNTIME_MINUTES: break
 
             context_full = run_tick(world)
             tick += 1
             alive = sum(1 for a in world.agents.values() if a.alive)
 
-            if tick % 25 == 0:
-                max_tokens = max(a.total_prompt_tokens for a in world.agents.values())
-                pct = (max_tokens / context_limit) * 100.0
-                print(
-                    f"Tick {tick:4d} | "
-                    f"Sim time: {world.sim_time/3600:.1f}h | "
-                    f"Alive: {alive}/{N_AGENTS} | "
-                    f"Market: ${world.market_price:.2f} | "
-                    f"Context: {pct:.1f}% | "
-                    f"Wall Clock: {elapsed_minutes:.1f}/{MAX_RUNTIME_MINUTES}m"
-                )
+            if tick % 5 == 0:
+                print(f"Tick {tick:4d} | Time: {world.sim_time/3600:.1f}h | Alive: {alive}/{N_AGENTS} | Mkt: ${world.market_price:.2f}")
 
-            if alive == 0:
-                print("All agents have died. Ending simulation.")
-                break
+            if alive == 0 or context_full: break
 
-            if context_full:
-                print(f"Context window approaching full. Ending simulation.")
-                break
-
-    except KeyboardInterrupt:
-        print("\n[USER ABORTED] You pressed Stop. Saving final data and writing logs...")
-    except Exception as e:
-        print(f"\n[FATAL ERROR] {str(e)}")
-
-    print("\n=== Final Token Usage ===")
-    for agent in world.agents.values():
-        pct = (agent.total_prompt_tokens / CONTEXT_SIZE) * 100.0
-        print(f"  {agent.name:8s}: {agent.total_prompt_tokens:>8,} tokens ({pct:.1f}% of total max context)")
+    except KeyboardInterrupt: print("\n[USER ABORTED]")
+    except Exception as e: print(f"\n[FATAL ERROR] {str(e)}")
 
     log_global({
         "simulation_complete": True,
-        "ticks":               tick,
-        "alive":               alive,
-        "sim_time_hours":      round(world.sim_time / 3600, 2),
-        "final_market_price":  round(world.market_price, 2),
-        "price_history":       world.price_history,
-        "financial_summary": {
-            a.name: {"money": round(a.money, 2), "total_expenses": round(a.total_expenses, 2)}
-            for a in world.agents.values()
-        },
-        "token_usage": {
-            a.name: a.total_prompt_tokens
-            for a in world.agents.values()
-        },
+        "ticks": tick,
+        "sim_time_hours": round(world.sim_time / 3600, 2),
     })
-    print(f"\nSimulation complete. Ticks: {tick}, Alive: {alive}")
+    print("\nSimulation complete.")
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()

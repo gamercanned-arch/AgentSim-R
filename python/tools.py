@@ -1,735 +1,463 @@
 import json
 import random
 import re
+import uuid
 from state import WorldState
-from locations import get_distance, LOCATIONS
+from locations import get_distance_3d, get_location_by_name, LOCATIONS_3D, get_current_location_def
+from config import MAX_INVENTORY
 
-# ── item catalog ─────────────────────────────────────────────────────
 ITEM_CATALOG = {
     "food": {
-        "Coffee": 5, "Sandwich": 8, "Meal": 15, "Pizza": 12,
-        "Salad": 10, "Burger": 9, "Soda": 3, "Water": 2, "Snacks": 6,
+        "Snacks": {"price": 4, "hunger": 10, "time": 60, "caffeine": 0},
+        "Water": {"price": 2, "hunger": 5, "time": 60, "caffeine": 0},
+        "Coffee": {"price": 5, "hunger": 5, "time": 120, "caffeine": 1},
+        "Sandwich": {"price": 10, "hunger": 30, "time": 600, "caffeine": 0},
+        "Pizza": {"price": 15, "hunger": 45, "time": 1200, "caffeine": 0},
+        "Premium Meal": {"price": 25, "hunger": 80, "time": 1800, "caffeine": 0},
     },
-    "everyday": {
-        "Toothbrush": 5, "Shampoo": 8, "Soap": 4, "Clothes": 50,
-        "Phone charger": 20, "Bus ticket": 3, "Metro card": 25,
-        "Notebook": 5, "Pen": 2, "Backpack": 40, "Umbrella": 15,
-        "Socks": 10, "Underwear": 15, "Towel": 12,
-    },
-    "entertainment": {
-        "Movie ticket": 15, "Video game": 60, "Book": 18,
-        "Streaming subscription": 15, "Music subscription": 10,
-        "Concert ticket": 80, "Board game": 30, "Puzzle": 20,
-    },
-    "health": {
-        "Medicine": 12, "Vitamins": 25, "Gym membership": 50,
-        "Bandages": 8, "First aid kit": 30, "Sunscreen": 15,
-    },
-    "housing": {
-        "Small Apartment": 75_000,  "Apartment": 120_000,
-        "Large Apartment": 200_000, "Small House": 250_000,
-        "House": 400_000,           "Luxury House": 750_000,
-        "Mansion": 1_500_000,       "Beach House": 500_000,
-        "Cabin": 150_000,
-    },
-    "transportation": {
-        "Bicycle": 300,       "Used Car": 15_000,  "New Car": 35_000,
-        "Luxury Car": 80_000, "Motorcycle": 10_000, "Scooter": 2_500,
-    },
-    "luxury": {
-        "Watch": 500, "Jewelry": 1_500, "Designer bag": 2_000,
-        "Gaming PC": 3_000, "Sunglasses": 250, "Perfume": 80,
-    },
-    "electronics": {
-        "Laptop": 1_200, "Tablet": 600,   "Smart TV": 800,
-        "Smartphone": 900, "Headphones": 200, "Smartwatch": 350,
-        "Camera": 700, "Speaker": 150,
-    },
-    "services": {
-        "Haircut": 25, "Laundry": 15, "Cleaning service": 60,
-        "Taxi ride": 25, "Uber ride": 30,
-    },
+    "everyday": {"Toothbrush": 5, "Clothes": 50, "Book": 20, "Art Supplies": 40, "Notebook": 5},
+    "housing": {"Small Apartment": 75_000, "Apartment": 120_000, "House": 400_000, "Luxury House": 750_000},
+    "health": {"Medicine": 12, "Vitamins": 25, "First aid kit": 30},
 }
 
-CONSUMABLE_EFFECTS = {
-    "Haircut":                {"happiness": +3},
-    "Laundry":                {"happiness": +2},
-    "Cleaning service":       {"happiness": +4, "stress": -3},
-    "Taxi ride":              {"happiness": +1},
-    "Uber ride":              {"happiness": +1},
-    "Medicine":               {"health": +10, "stress": -2},
-    "Vitamins":               {"health": +5,  "happiness": +1},
-    "Gym membership":         {"health": +8,  "stress": -5, "happiness": +5},
-    "Bandages":               {"health": +8},
-    "First aid kit":          {"health": +15, "stress": -2},
-    "Sunscreen":              {"health": +2,  "happiness": +1},
-    "Movie ticket":           {"happiness": +5, "stress": -3},
-    "Video game":             {"happiness": +4, "stress": -2},
-    "Book":                   {"happiness": +3, "stress": -1},
-    "Streaming subscription": {"happiness": +3, "stress": -1},
-    "Music subscription":     {"happiness": +2, "stress": -1},
-    "Concert ticket":         {"happiness": +8, "stress": -5},
-    "Board game":             {"happiness": +4, "stress": -2},
-    "Puzzle":                 {"happiness": +3, "stress": -1},
+JOB_FLAVORS = {
+    "tech": {"pick": "Laptop", "obj": "Computer", "q": "Server crashed due to OOM. A) Restart server, B) Optimize memory, C) Download more RAM.", "ans": "B"},
+    "startup": {"pick": "Pitch Deck", "obj": "Investor", "q": "Investor asks about churn rate. A) Lie, B) Explain retention strategy, C) Cry.", "ans": "B"},
+    "founder": {"pick": "Pitch Deck", "obj": "Investor", "q": "Investor asks about churn rate. A) Lie, B) Explain retention strategy, C) Cry.", "ans": "B"},
+    "nurse": {"pick": "Stethoscope", "obj": "Patient", "q": "Patient has high BP. A) Give adrenaline, B) Administer beta-blockers, C) Ignore.", "ans": "B"},
+    "doctor": {"pick": "Stethoscope", "obj": "Patient", "q": "Patient has high BP. A) Give adrenaline, B) Administer beta-blockers, C) Ignore.", "ans": "B"},
+    "teacher": {"pick": "Marker", "obj": "Whiteboard", "q": "Student asks for help with fractions. A) Ignore them, B) Explain visually, C) Give detention.", "ans": "B"},
+    "tutor": {"pick": "Marker", "obj": "Whiteboard", "q": "Student asks for help with fractions. A) Ignore them, B) Explain visually, C) Give detention.", "ans": "B"},
+    "delivery": {"pick": "Scanner", "obj": "Box", "q": "Label is torn. A) Guess address, B) Return to depot for relabeling, C) Throw in trash.", "ans": "B"},
+    "driver": {"pick": "Scanner", "obj": "Box", "q": "Label is torn. A) Guess address, B) Return to depot for relabeling, C) Throw in trash.", "ans": "B"},
+    "fedex": {"pick": "Scanner", "obj": "Box", "q": "Label is torn. A) Guess address, B) Return to depot for relabeling, C) Throw in trash.", "ans": "B"},
+    "freelance": {"pick": "Coffee", "obj": "IDE", "q": "Client wants 10 extra features today. A) Agree, B) Negotiate scope, C) Block client.", "ans": "B"},
+    "developer": {"pick": "Coffee", "obj": "IDE", "q": "Client wants 10 extra features today. A) Agree, B) Negotiate scope, C) Block client.", "ans": "B"},
+    "generic": {"pick": "Notepad", "obj": "Desk", "q": "A mundane task appears. A) Procrastinate, B) Complete it efficiently, C) Complain.", "ans": "B"},
+    "education": {"pick": "Textbook", "obj": "Exam", "q": "What is the powerhouse of the cell? A) Nucleus, B) Mitochondria, C) Ribosome.", "ans": "B"}
 }
-
-HOUSE_LOCATIONS = {
-    "Small Apartment": "Apartment_Small",
-    "Apartment":       "Apartment_Medium",
-    "Large Apartment": "Apartment_Large",
-    "Small House":     "House_Small",
-    "House":           "House_Medium",
-    "Luxury House":    "House_Luxury",
-    "Mansion":         "Estate_Mansion",
-    "Beach House":     "House_Beach",
-    "Cabin":           "House_Cabin",
-}
-
-SOCIAL_COOLDOWN = 600.0
-
-def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
-    return max(lo, min(hi, value))
-
-def get_item_price(item_name: str) -> tuple:
-    for category, items in ITEM_CATALOG.items():
-        if item_name in items:
-            base = items[item_name]
-            if category == "housing":
-                price = float(base) * random.uniform(0.97, 1.03)
-            else:
-                price = base * random.uniform(0.9, 1.1)
-            return price, category, item_name
-    return 0.0, "", ""
-
-def is_housing_item(item_name: str) -> bool:
-    return item_name in HOUSE_LOCATIONS
-
-def is_consumable_item(item_name: str) -> bool:
-    return item_name in CONSUMABLE_EFFECTS
-
-def get_house_location(item_name: str) -> tuple:
-    loc_name = HOUSE_LOCATIONS.get(item_name)
-    if loc_name and loc_name in LOCATIONS:
-        return LOCATIONS[loc_name]
-    return None
-
-def _record_expense(agent, amount: float) -> None:
-    agent.expenses       += amount
-    agent.total_expenses += amount
-
-def _validate_shares(raw) -> tuple:
-    try:
-        val = float(raw)
-        if not val.is_integer():
-            return 0, "Shares must be a whole number."
-        shares = int(val)
-        if shares <= 0:
-            return 0, "Shares must be greater than zero."
-        return shares, None
-    except (ValueError, TypeError):
-        return 0, "Invalid number of shares."
-
-def _check_social_cooldown(agent, target_name: str, sim_time: float) -> bool:
-    key  = target_name.lower()
-    last = agent.social_cooldowns.get(key, -SOCIAL_COOLDOWN)
-    if sim_time - last >= SOCIAL_COOLDOWN:
-        agent.social_cooldowns[key] = sim_time
-        return True
-    return False
 
 def parse_tool_call(tool_call_str: str) -> tuple:
     try:
-        # Strip <think> blocks before parsing to prevent matching hypothetical plans
         clean_str = re.sub(r'<think>.*?</think>', '', tool_call_str, flags=re.DOTALL)
-        
-        # Grab the last tool call to ensure we get their final decision
         matches = list(re.finditer(r'<tool_call>(.*?)</tool_call>', clean_str, re.DOTALL))
-        if not matches:
-            return "Parse error: No <tool_call> tags found.", {}
-            
+        if not matches: return "Parse error: No <tool_call> tags found.", {}
         block = matches[-1].group(1)
-        
         func_match = re.search(r'<function=([^>]+)>(.*?)</function>', block, re.DOTALL)
-        if not func_match:
-            return "Parse error: No <function=name> tag found.", {}
-        
+        if not func_match: return "Parse error: No <function=name> tag found.", {}
         name = func_match.group(1).strip()
         params_block = func_match.group(2)
-        
         args = {}
         param_matches = re.finditer(r'<parameter=([^>]+)>(.*?)</parameter>', params_block, re.DOTALL)
-        for p in param_matches:
-            args[p.group(1).strip()] = p.group(2).strip()
-            
+        for p in param_matches: args[p.group(1).strip()] = p.group(2).strip()
         return name, args
     except Exception as e:
         return f"Parse error: {e}", {}
 
+def _check_open_hours(loc: tuple, current_time: float) -> bool:
+    if not loc: return True
+    hour = (current_time // 3600) % 24
+    if loc.open_time == loc.close_time: return True
+    if loc.open_time <= loc.close_time: return loc.open_time <= hour < loc.close_time
+    else: return hour >= loc.open_time or hour < loc.close_time
 
-# ── tool execution ───────────────────────────────────────────────────
+def _has_item(agent, item_name):
+    for i, it in enumerate(agent.inventory):
+        if it["item"].lower() == item_name.lower(): return i
+    return -1
+
+def _is_busy(target_agent, current_time):
+    return target_agent.busy_until > current_time or target_agent.task_state != "idle"
+
+def _validate_shares(raw) -> tuple:
+    try:
+        val = float(raw)
+        if not val.is_integer(): return 0, "Shares must be a whole number."
+        shares = int(val)
+        if shares <= 0: return 0, "Shares must be > zero."
+        return shares, None
+    except: return 0, "Invalid number of shares."
 
 def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
     name, args = parse_tool_call(tool_call_str)
-    if isinstance(name, str) and name.startswith("Parse error"):
-        return name, False, 60
-    if not name:
-        return "Parse error: No tool name found.", False, 60
+    if isinstance(name, str) and name.startswith("Parse error"): return name, False, 60
+    if not name: return "Parse error: No tool name.", False, 60
 
     agent = world.agents.get(agent_id)
-    if not agent or not agent.alive:
-        return "Agent inactive.", False, 0
+    if not agent or not agent.alive: return "Agent inactive.", False, 0
+    time_cost = 300
 
-    time_costs = {
-        "move_to":          300,
-        "walk":              60,
-        "buy_item":         120,
-        "eat_food":          60,
-        "work_job":        3600,
-        "talk_to":          300,
-        "interact_with":    180,
-        "seek_medicalcare": 600,
-        "get_education":  28800,  # 8 hours
-        "call_person":       60,
-        "change_status":     30,
-        "attack_person":     60,
-        "buy_stock":         60,
-        "sell_stock":        60,
-        "sleep":          28800,
-    }
-    
-    time_cost = time_costs.get(name, 300)
+    if agent.task_state != "idle" and name not in ["interact_with", "pick_item"]:
+        agent.fail_counter += 1
+        return "You are in a task. You must use `pick_item` or `interact_with` to proceed!", False, 60
 
     # ── sleep ────────────────────────────────────────────────────────
     if name == "sleep":
-        hours = args.get("hours", 8)
-        try: hours = float(hours)
-        except (ValueError, TypeError): hours = 8.0
-        hours = max(1.0, min(12.0, hours))
+        hours = max(1.0, min(12.0, float(args.get("hours", 8))))
         time_cost = int(hours * 3600)
+        loc_def = get_current_location_def(agent.x, agent.y, agent.z)
+        is_home = (loc_def and loc_def.name == f"Home_{agent.name}")
         
-        agent.energy = min(100.0, agent.energy + (hours * 10.0))
+        agent.awake_hours = 0
+        cap = 100.0 if is_home else 60.0
+        agent.energy = min(cap, agent.energy + (hours * 10.0))
         agent.stress = max(0.0, agent.stress - (hours * 2.0))
-        agent.health = min(100.0, agent.health + (hours * 1.0))
         
-        return (
-            f"Slept for {hours:.1f} hours. "
-            f"Energy: {agent.energy:.1f}, Health: {agent.health:.1f}."
-        ), True, time_cost
+        msg = f"Slept {hours:.1f}h. Energy: {agent.energy:.1f}. Do Not Disturb active."
+        if not is_home: msg += " (Poor sleep outside home: capped at 60%)."
+        return msg, True, time_cost
 
-        # ── move_to ──────────────────────────────────────────────────────
+    # ── move_to & walk ───────────────────────────────────────────────
     if name == "move_to":
         place = str(args.get("place", ""))[:50]
-        if not place:
-            return "No place specified.", False, 60
-        if place not in LOCATIONS:
-            return f"Unknown place: '{place}'. Check VALID LOCATIONS list.", False, 60
-            
-        # Vehicle Speed Logic (Safe check)
-        inv = agent.inventory
-        if inv.get("Luxury Car", 0) > 0 or inv.get("New Car", 0) > 0 or inv.get("Used Car", 0) > 0:
-            time_cost = 60
-        elif inv.get("Motorcycle", 0) > 0 or inv.get("Scooter", 0) > 0:
-            time_cost = 120
-        elif inv.get("Bicycle", 0) > 0:
-            time_cost = 180
-            
-        agent.location   = place
-        agent.x, agent.y = LOCATIONS[place]
-        return f"Moved to {place}.", True, time_cost
+        if place.lower() in ["house", "home"]: place = f"Home_{agent.name}"
+        
+        target_loc = get_location_by_name(place)
+        if not target_loc: return f"Unknown place: '{place}'.", False, 60
 
-    # ── walk ─────────────────────────────────────────────────────────
+        if place.startswith("Home_") and place != f"Home_{agent.name}":
+            owner_name = place.split("_")[1]
+            owner = next((a for a in world.agents.values() if a.name == owner_name), None)
+            if owner and get_current_location_def(owner.x, owner.y, owner.z) != target_loc:
+                return f"{owner_name} is not home. Door is locked.", False, 60
+
+        if not _check_open_hours(target_loc, world.sim_time):
+            return f"{place} is currently closed.", False, 60
+
+        target_coords = ((target_loc.x_min + target_loc.x_max)/2, (target_loc.y_min + target_loc.y_max)/2, target_loc.z_min)
+        dist = get_distance_3d((agent.x, agent.y, agent.z), target_coords)
+        
+        energy_drain = dist * 0.005
+        if agent.energy < energy_drain:
+            return f"Too exhausted to travel {dist:.0f}m. Need {energy_drain:.1f} Energy.", False, 60
+
+        agent.energy -= energy_drain
+        time_cost = int(dist / 1.5) 
+        agent.x, agent.y, agent.z = target_coords
+        agent.location = place
+        
+        occupants = sum(1 for a in world.agents.values() if a.location == place)
+        msg = f"Travelled to {place} (-{energy_drain:.1f} Energy)."
+        if occupants > 3: msg += " It's crowded here."
+        return msg, True, time_cost
+
     if name == "walk":
-        direction = str(args.get("direction", "")).strip().lower()[:20]
-        diag = 30.0 / (2 ** 0.5)
-        direction_map = {
-            "north":     ( 0,      30),
-            "south":     ( 0,     -30),
-            "east":      ( 30,      0),
-            "west":      (-30,      0),
-            "northeast": ( diag,  diag),
-            "northwest": (-diag,  diag),
-            "southeast": ( diag, -diag),
-            "southwest": (-diag, -diag),
-        }
-        delta = direction_map.get(direction)
-        if delta is None:
-            valid = ", ".join(sorted(direction_map.keys()))
-            return f"Invalid direction: '{direction}'. Valid: {valid}.", False, 60
+        direction = str(args.get("direction", "")).strip().lower()
+        delta = {"north": (0,30), "south": (0,-30), "east": (30,0), "west": (-30,0), 
+                 "northeast": (21,21), "northwest": (-21,21), "southeast": (21,-21), "southwest": (-21,-21)}.get(direction)
+        if not delta: return "Invalid direction.", False, 60
+        agent.x = max(0, min(5000, agent.x + delta[0]))
+        agent.y = max(0, min(5000, agent.y + delta[1]))
+        
+        loc_def = get_current_location_def(agent.x, agent.y, agent.z)
+        agent.location = loc_def.name if loc_def else "Outside"
+        return f"Walked {direction}. Location updated to: {agent.location}.", True, 60
 
-        new_x = _clamp(agent.x + delta[0], 0.0, 5000.0)
-        new_y = _clamp(agent.y + delta[1], 0.0, 5000.0)
-        agent.x, agent.y = new_x, new_y
+    # ── pick_item / unequip ──────────────────────────────────────────
+    if name == "pick_item":
+        item = args.get("item_name", "")
+        if item.lower() in ["none", "store", "unequip", "put away", ""]:
+            if agent.currently_holding:
+                agent.inventory.append(agent.currently_holding)
+                held_name = agent.currently_holding['item']
+                agent.currently_holding = None
+                return f"Stored {held_name} back in inventory.", True, 30
+            return "You aren't holding anything to store.", False, 30
 
-        nearest_name = agent.location
-        nearest_dist = float("inf")
-        for loc_name, loc_coords in LOCATIONS.items():
-            d = get_distance((new_x, new_y), loc_coords)
-            if d < nearest_dist:
-                nearest_dist = d
-                nearest_name = loc_name
+        if agent.task_state == "job_pick":
+            flavor = agent.pending_task_data["flavor"]
+            if item.lower() != flavor["pick"].lower():
+                return f"You need to pick_item '{flavor['pick']}' to do your job.", False, 30
+            
+            agent.currently_holding = {"id": "job_prop", "item": flavor["pick"], "durability": 99}
+            agent.task_state = "job_mcq"
+            return f"[WORK] You grab the {flavor['pick']}. Scenario: {flavor['q']} Use `interact_with(person_or_object='{flavor['obj']}', action='A, B, or C')`", True, 60
+        
+        idx = _has_item(agent, item)
+        if idx == -1: return f"Item {item} not in inventory.", False, 60
+        if agent.currently_holding:
+            agent.inventory.append(agent.currently_holding)
+        agent.currently_holding = agent.inventory.pop(idx)
+        return f"Now holding {item} in hand.", True, 30
 
-        if nearest_dist <= 50:
-            agent.location = nearest_name
+    # ── work_job / get_education (INTERACTIVE EXAMS) ─────────────────
+    if name in ["work_job", "get_education"]:
+        if agent.task_state != "idle": return "Already doing a task.", False, 60
+        job_raw = args.get("jobname", "generic") if name == "work_job" else "education"
+        hours = float(args.get("hours", 8) if name == "work_job" else 8)
+        
+        if agent.energy < (hours * 10): 
+            return f"Need {hours*10} energy to work {hours}h. Have {agent.energy:.1f}.", False, 60
+        
+        matched_flavor = JOB_FLAVORS["generic"]
+        if name == "get_education":
+            matched_flavor = JOB_FLAVORS["education"]
         else:
-            agent.location = f"Near {nearest_name} ({nearest_dist:.0f}m away)"
+            for k, v in JOB_FLAVORS.items():
+                if k in job_raw.lower():
+                    matched_flavor = v
+                    break
+                    
+        agent.task_state = "job_pick"
+        agent.pending_task_data = {"type": name, "hours": hours, "flavor": matched_flavor}
+        return f"[SCENARIO INITIATED] Shift started as {job_raw}. To begin, use `pick_item('{matched_flavor['pick']}')` from your workspace.", True, 60
 
-        return (
-            f"Walked {direction}. Position: ({new_x:.0f}, {new_y:.0f}). "
-            f"Location: {agent.location}."
-        ), True, time_cost
+    # ── interact_with / change_status ─────────────────────────────────
+    if name == "interact_with":
+        target = str(args.get("person_or_object", ""))
+        action = str(args.get("action", ""))
+        
+        if agent.task_state == "job_mcq":
+            flavor = agent.pending_task_data["flavor"]
+            if target.lower() != flavor["obj"].lower():
+                return f"You must interact_with '{flavor['obj']}' to complete the task.", False, 60
+                
+            if agent.currently_holding and agent.currently_holding.get("id") == "job_prop":
+                agent.currently_holding = None
+            agent.task_state = "idle"
+            
+            data = agent.pending_task_data
+            time_cost = int(data["hours"] * 3600)
+            agent.energy -= data["hours"] * 10
+            
+            correct = flavor["ans"].lower() in action.lower()
+            if data["type"] == "get_education":
+                agent.education = min(100, agent.education + (5 if correct else 1))
+                agent.hourly_wage += (5.0 if correct else 1.0)
+                return f"Exam finished. Correct? {correct}. Wage increased. Time passed: {data['hours']}h. DND active.", True, time_cost
+            else:
+                pay = agent.hourly_wage * data["hours"] * (world.market_price/100.0) 
+                if not correct: pay *= 0.5
+                agent.money += pay
+                return f"Task resolved. Client satisfied? {correct}. Earned ${pay:.2f}. Time passed: {data['hours']}h. DND active.", True, time_cost
 
-    # ── buy_item ─────────────────────────────────────────────────────
+        target_agent = next((a for a in world.agents.values() if a.name.lower() == target.lower() and a.alive), None)
+        if target_agent:
+            if _is_busy(target_agent, world.sim_time): return f"{target_agent.name} is currently busy/sleeping (DND).", False, 60
+            if get_distance_3d((agent.x, agent.y, agent.z), (target_agent.x, target_agent.y, target_agent.z)) > 20: return "Too far.", False, 60
+            target_agent.pending_notifications.append(f"{agent.name} interacted with you ({action}).")
+            return f"Interacted with {target}.", True, 60
+
+        loc = get_current_location_def(agent.x, agent.y, agent.z)
+        if loc:
+            for obj in loc.interactables:
+                if obj["name"].lower() == target.lower():
+                    if "target_z" in obj:
+                        agent.z = obj["target_z"]
+                        return f"Used {target}. Moved to floor Z={agent.z}.", True, 60
+                    else:
+                        return f"Used {target} ({action}).", True, 60
+                    
+        return f"Interacted with object {target}.", True, 60
+
+    if name == "change_status":
+        value = str(args.get("value", ""))
+        person = str(args.get("person", ""))
+        rel_type = str(args.get("type", ""))
+        
+        if value:
+            agent.beliefs = value
+            return f"Belief/Goal updated to: \"{value}\".", True, 30
+        
+        if person and rel_type:
+            target = next((a for a in world.agents.values() if a.name.lower() == person.lower() and a.alive), None)
+            if not target: return f"Person '{person}' not found.", False, 60
+            req_key = person.lower()
+            if agent.pending_status_requests.get(req_key) == rel_type.lower():
+                agent.relationships_status = rel_type.lower()
+                target.relationships_status = rel_type.lower()
+                del agent.pending_status_requests[req_key]
+                target.pending_notifications.append(f"{agent.name} accepted status: {rel_type}.")
+                return f"Status with {person} changed to: {rel_type}.", True, 30
+            else:
+                target.pending_status_requests[agent.name.lower()] = rel_type.lower()
+                target.pending_notifications.append(f"{agent.name} wants status: {rel_type}.")
+                return f"Requested status change to '{rel_type}' with {person}.", True, 30
+        return "Invalid parameters.", False, 60
+
+    # ── SOCIAL / AGGRESSION TOOLS (DND ENFORCED) ──────────────────────
+    if name == "attack_person":
+        t_name = str(args.get("person", ""))
+        target = next((a for a in world.agents.values() if a.name.lower() == t_name.lower() and a.alive), None)
+        if not target: return "Target not found.", False, 60
+        if _is_busy(target, world.sim_time): return f"{target.name} is securely locked away working or sleeping. Cannot attack.", False, 60
+        if get_distance_3d((agent.x, agent.y, agent.z), (target.x, target.y, target.z)) > 20: return "Too far.", False, 60
+        
+        damage = random.uniform(5, 25)
+        target.health -= damage
+        target.stress += 15
+        if target.busy_until > world.sim_time: target.busy_until = world.sim_time 
+        target.task_state = "idle"
+        if target.currently_holding and target.currently_holding.get("id") == "job_prop": target.currently_holding = None
+        target.pending_notifications.append(f"URGENT: {agent.name} attacked you! Action interrupted.")
+        
+        if target.health <= 0:
+            target.alive = False
+            if target.currently_holding and target.currently_holding.get("id") != "job_prop":
+                target.inventory.append(target.currently_holding)
+                
+            closest = min([a for a in world.agents.values() if a.alive and a.id != target.id], 
+                          key=lambda a: get_distance_3d((a.x, a.y, a.z), (target.x, target.y, target.z)), default=None)
+            if closest and get_distance_3d((closest.x, closest.y, closest.z), (target.x, target.y, target.z)) < 100:
+                closest.inventory.extend(target.inventory)
+                closest.money += target.money
+                closest.pending_notifications.append(f"You scavenged ${target.money:.2f} and items from {target.name}'s body.")
+            from logger import log_death
+            log_death(target)
+            return f"Killed {t_name}.", True, 60
+        return f"Attacked {t_name}.", True, 60
+
+    if name == "talk_to":
+        t_name = str(args.get("person", "")); msg = str(args.get("message", ""))
+        target = next((a for a in world.agents.values() if a.name.lower() == t_name.lower() and a.alive), None)
+        if not target: return "Target not found.", False, 60
+        if _is_busy(target, world.sim_time): return f"{target.name} is currently working or sleeping (DND).", False, 60
+        if get_distance_3d((agent.x, agent.y, agent.z), (target.x, target.y, target.z)) > 50: return "Cannot reach target.", False, 60
+        
+        agent.social_fulfillment = min(100.0, agent.social_fulfillment + 10)
+        target.pending_notifications.append(f"{agent.name} said: {msg}")
+        for a in world.agents.values():
+            if a.alive and a.id not in (agent.id, target.id) and get_distance_3d((a.x, a.y, a.z), (agent.x, agent.y, agent.z)) <= 50:
+                a.pending_notifications.append(f"Overheard {agent.name} say to {t_name}: '{msg}'")
+        return f"Talked to {t_name}.", True, 60
+        
+    if name == "call_person":
+        t_name = str(args.get("person", "")); msg = str(args.get("message", ""))
+        target = next((a for a in world.agents.values() if a.name.lower() == t_name.lower() and a.alive), None)
+        if not target: return "Target not found.", False, 60
+        if _is_busy(target, world.sim_time): return f"Call to {target.name} went straight to voicemail (DND).", False, 60
+        target.pending_notifications.append(f"Phone Call from {agent.name}: {msg}")
+        return f"Called {t_name}.", True, 60
+
+    if name == "give_item":
+        t_name = str(args.get("person", "")); item_name = str(args.get("item", ""))
+        target = next((a for a in world.agents.values() if a.name.lower() == t_name.lower() and a.alive), None)
+        if not target: return "Target not found.", False, 60
+        if _is_busy(target, world.sim_time): return f"{target.name} is busy (DND).", False, 60
+        if get_distance_3d((agent.x, agent.y, agent.z), (target.x, target.y, target.z)) > 20: return "Too far.", False, 60
+        if len(target.inventory) >= MAX_INVENTORY: return f"{target.name}'s inventory is full.", False, 60
+        
+        idx = _has_item(agent, item_name)
+        if idx == -1: return f"You don't have {item_name}.", False, 60
+        item_data = agent.inventory.pop(idx)
+        target.inventory.append(item_data)
+        target.pending_notifications.append(f"{agent.name} gave you {item_name}.")
+        agent.social_fulfillment = min(100.0, agent.social_fulfillment + 15)
+        return f"Gave {item_name} to {t_name}.", True, 60
+
+    if name == "give_money":
+        t_name = str(args.get("person", ""))
+        try: amount = float(args.get("amount", 0))
+        except: amount = 0.0
+        if amount <= 0: return "Invalid amount.", False, 60
+        if agent.money < amount: return "Not enough money.", False, 60
+        target = next((a for a in world.agents.values() if a.name.lower() == t_name.lower() and a.alive), None)
+        if not target: return "Target not found.", False, 60
+        if _is_busy(target, world.sim_time): return f"{target.name} is busy (DND).", False, 60
+        if get_distance_3d((agent.x, agent.y, agent.z), (target.x, target.y, target.z)) > 20: return "Too far.", False, 60
+        agent.money -= amount
+        target.money += amount
+        target.pending_notifications.append(f"{agent.name} gave you ${amount:.2f}.")
+        agent.social_fulfillment = min(100.0, agent.social_fulfillment + 15)
+        return f"Gave ${amount:.2f} to {t_name}.", True, 60
+
+    # ── FINITE ITEM MANAGEMENT & MARKET ───────────────────────────────
     if name == "buy_item":
         item = str(args.get("item", ""))[:50]
-        if not item:
-            return "No item specified.", False, 60
-
-        price, category, _ = get_item_price(item)
-        if price == 0:
-            return f"Unknown item: '{item}'. Check ITEM CATALOG.", False, 60
-
-        if is_housing_item(item):
-            sell_price = 0.0
-            old_home   = agent.current_home
-            if old_home:
-                old_price, _, _ = get_item_price(old_home)
-                sell_price = old_price * 0.7
-
-            if (agent.money + sell_price) < price:
-                return (
-                    f"Cannot afford {item}. Need ${price:.2f}, "
-                    f"have ${agent.money:.2f} + ${sell_price:.2f} equity."
-                ), False, 60
-
-            # Execute Housing Swap (No _record_expense for capital assets)
-            agent.money += sell_price
-            if old_home in agent.owned_locations:
-                agent.owned_locations.remove(old_home)
+        if item in ITEM_CATALOG.get("housing", {}):
+            price = ITEM_CATALOG["housing"][item]
+            if agent.money < price: return "Cannot afford housing.", False, 60
             agent.money -= price
             agent.owned_locations.append(item)
             agent.current_home = item
+            return f"Bought {item}. Moved in.", True, 3600
+        
+        if len(agent.inventory) >= MAX_INVENTORY: return "Inventory full.", False, 60
+        if world.store_inventory.get(item, 0) <= 0: return f"'{item}' is completely out of stock in the village.", False, 60
 
-            coords = get_house_location(item)
-            if coords:
-                agent.x, agent.y = coords
-                agent.location = HOUSE_LOCATIONS[item]
-
-            prefix = f"Sold {old_home} for ${sell_price:.2f}. " if sell_price > 0 else ""
-            return (
-                f"{prefix}Purchased {item} for ${price:.2f}. "
-                f"Moved to {agent.location}."
-            ), True, time_cost
-
-        if agent.money < price:
-            return (
-                f"Not enough money to buy {item}. "
-                f"Need ${price:.2f}, have ${agent.money:.2f}."
-            ), False, 60
-
-        if is_consumable_item(item):
-            agent.money -= price
-            _record_expense(agent, price)
-            effects = CONSUMABLE_EFFECTS.get(item, {})
-            agent.happiness = _clamp(agent.happiness + effects.get("happiness", 0))
-            agent.stress    = _clamp(agent.stress    + effects.get("stress",    0))
-            agent.health    = _clamp(agent.health    + effects.get("health",    0))
-            return (
-                f"Used {item} (${price:.2f}). "
-                f"Health: {agent.health:.1f}, Happiness: {agent.happiness:.1f}, "
-                f"Stress: {agent.stress:.1f}. Money: ${agent.money:.2f}."
-            ), True, time_cost
-
-        # Everyday items, vehicles, electronics
+        price = 0
+        for cat, items in ITEM_CATALOG.items():
+            if item in items and cat != "housing":
+                price = items[item]["price"] if isinstance(items[item], dict) else items[item]
+                break
+        if not price: return f"Item '{item}' not found.", False, 60
+        if agent.money < price: return "Cannot afford.", False, 60
+        
         agent.money -= price
-        _record_expense(agent, price)
-        agent.inventory[item] = agent.inventory.get(item, 0) + 1
-        return (
-            f"Bought {item} for ${price:.2f}. "
-            f"Inventory: {agent.inventory[item]}×{item}. "
-            f"Money: ${agent.money:.2f}."
-        ), True, time_cost
+        world.store_inventory[item] -= 1
+        agent.inventory.append({"id": str(uuid.uuid4()), "item": item, "durability": 5, "bought": world.sim_time})
+        return f"Bought {item} for ${price}.", True, 120
 
-    # ── buy_stock ────────────────────────────────────────────────────
+    if name == "eat_food":
+        item = str(args.get("item", ""))[:50]
+        idx = _has_item(agent, item)
+        if idx != -1:
+            food_data = agent.inventory.pop(idx)
+            if world.sim_time - food_data.get("bought", 0) > 172800:
+                agent.health -= 10
+                return "The food was spoiled! Health -10.", True, 60
+        else:
+            if item not in ITEM_CATALOG["food"]: return "Food not found.", False, 60
+            if world.store_inventory.get(item, 0) <= 0: return f"'{item}' is completely out of stock in the village.", False, 60
+            cost = ITEM_CATALOG["food"][item]["price"]
+            if agent.money < cost: return "Cannot afford.", False, 60
+            agent.money -= cost
+            world.store_inventory[item] -= 1
+
+        f_stats = ITEM_CATALOG["food"].get(item, {"hunger": 20, "time": 600, "caffeine": 0})
+        agent.hunger = max(0.0, agent.hunger - f_stats["hunger"])
+        agent.caffeine_level += f_stats["caffeine"]
+        return f"Ate {item}. Hunger reduced.", True, f_stats["time"]
+
+    if name == "do_hobby":
+        item = str(args.get("item", ""))[:50]
+        idx = _has_item(agent, item)
+        if idx == -1: return f"You don't have {item}.", False, 60
+        agent.stress = max(0.0, agent.stress - 15)
+        agent.happiness = min(100.0, agent.happiness + 10)
+        agent.inventory[idx]["durability"] -= 1
+        msg = f"Enjoyed hobby with {item}. Stress fell."
+        if agent.inventory[idx]["durability"] <= 0:
+            agent.inventory.pop(idx)
+            msg += f" {item} wore out."
+        return msg, True, 3600
+
     if name == "buy_stock":
         shares, err = _validate_shares(args.get("shares", 0))
         if err: return err, False, 60
-
-        price_per_share = world.market_price
-        total_cost      = price_per_share * shares
-        if agent.money < total_cost:
-            return (
-                f"Cannot afford {shares} share(s). "
-                f"Cost: ${total_cost:.2f}, have ${agent.money:.2f}."
-            ), False, 60
-
-        agent.money -= total_cost
-        # NO _record_expense for capital asset purchase to prevent Heart Attack Bug
-
-        old_cost_basis = agent.last_known_price * agent.shares_owned
+        from utils import is_market_open
+        if not is_market_open(world.sim_time):
+            agent.pending_market_orders.append({"type": "buy", "shares": shares})
+            return f"Market closed. Buy order for {shares} queued.", True, 60
+        cost = world.market_price * shares
+        if agent.money < cost: return "Cannot afford.", False, 60
+        agent.money -= cost
+        old_cost = agent.last_known_price * agent.shares_owned
         agent.shares_owned += shares
-        agent.last_known_price = (old_cost_basis + total_cost) / agent.shares_owned
-
+        agent.last_known_price = (old_cost + cost) / agent.shares_owned
         world.net_volume_this_period += shares
+        return f"Bought {shares} share(s).", True, 60
 
-        return (
-            f"Bought {shares} share(s) at ${price_per_share:.2f} each "
-            f"(total ${total_cost:.2f}). "
-            f"Holdings: {agent.shares_owned} share(s). "
-            f"Money: ${agent.money:.2f}."
-        ), True, time_cost
-
-    # ── sell_stock ───────────────────────────────────────────────────
     if name == "sell_stock":
         shares, err = _validate_shares(args.get("shares", 0))
         if err: return err, False, 60
-        if agent.shares_owned < shares:
-            return (
-                f"You only own {agent.shares_owned} share(s), "
-                f"cannot sell {shares}."
-            ), False, 60
-
-        price_per_share = world.market_price
-        proceeds        = price_per_share * shares
-        gain            = proceeds - (agent.last_known_price * shares)
-
-        agent.money        += proceeds
+        if agent.shares_owned < shares: return "Not enough shares.", False, 60
+        from utils import is_market_open
+        if not is_market_open(world.sim_time):
+            agent.pending_market_orders.append({"type": "sell", "shares": shares})
+            return f"Market closed. Sell order for {shares} queued.", True, 60
+        proceeds = world.market_price * shares
+        agent.money += proceeds
         agent.shares_owned -= shares
-        if agent.shares_owned == 0:
-            agent.last_known_price = 0.0
-
+        if agent.shares_owned == 0: agent.last_known_price = 0.0
         world.net_volume_this_period -= shares
+        return f"Sold {shares} share(s).", True, 60
 
-        gain_str = f"+${gain:.2f}" if gain >= 0 else f"-${abs(gain):.2f}"
-        return (
-            f"Sold {shares} share(s) at ${price_per_share:.2f} each "
-            f"(proceeds ${proceeds:.2f}, P&L {gain_str}). "
-            f"Holdings: {agent.shares_owned} share(s). "
-            f"Money: ${agent.money:.2f}."
-        ), True, time_cost
-
-    # ── eat_food ─────────────────────────────────────────────────────
-    if name == "eat_food":
-        item = str(args.get("item", ""))[:50]
-        if not item: return "No food item specified.", False, 60
-
-        food_menu = ITEM_CATALOG.get("food", {})
-        if item not in food_menu:
-            return (
-                f"'{item}' is not a food item. "
-                f"Available: {', '.join(food_menu.keys())}."
-            ), False, 60
-
-        if agent.inventory.get(item, 0) > 0:
-            agent.inventory[item] -= 1
-            source = "from inventory"
-            cost   = 0.0
-        else:
-            cost = food_menu[item] * random.uniform(0.9, 1.1)
-            if agent.money < cost:
-                return (
-                    f"No {item} in inventory and cannot afford it "
-                    f"(${cost:.2f}). Have ${agent.money:.2f}."
-                ), False, 60
-            agent.money -= cost
-            _record_expense(agent, cost)
-            source = f"purchased (${cost:.2f})"
-
-        hunger_reduction = {
-            "Coffee": 5, "Soda": 10, "Water": 10, "Snacks": 15,
-            "Sandwich": 25, "Salad": 30, "Burger": 35,
-            "Pizza": 40,   "Meal": 50,
-        }.get(item, 20)
-
-        agent.hunger = max(0.0,   agent.hunger - hunger_reduction)
-        agent.health = min(100.0, agent.health + 2.0)
-        agent.energy = min(100.0, agent.energy + 5.0)
-
-        msg = (
-            f"Ate {item} ({source}). "
-            f"Hunger: {agent.hunger:.1f}, Health: {agent.health:.1f}."
-        )
-        if cost > 0: msg += f" Money: ${agent.money:.2f}."
-        return msg, True, time_cost
-
-    # ── work_job ─────────────────────────────────────────────────────
-    if name == "work_job":
-        if agent.energy < 10.0:
-            return "Too tired to work. Please use sleep tool to restore energy.", False, 60
-            
-        jobname = str(args.get("jobname", ""))[:50]
-        if not jobname: return "No job specified.", False, 60
-        
-        hours = float(args.get("hours", 1))
-        try: hours = float(hours)
-        except: hours = 1.0
-        hours = max(1.0, min(12.0, hours))
-        
-        time_cost = int(hours * 3600)
-        job_lower = jobname.lower()
-
-        workplace_map = {
-            "nurse":    "Hospital",     "doctor":    "Hospital",
-            "medical":  "Hospital",     "teacher":   "School",
-            "tutor":    "School",       "education": "School",
-            "delivery": "Office_FedEx", "driver":    "Office_FedEx",
-            "fedex":    "Office_FedEx", "startup":   "Startup_Sowl",
-            "founder":  "Startup_Sowl", "tech":      "Startup_Sowl",
-        }
-        required_place = None
-        for key, place in workplace_map.items():
-            if key in job_lower:
-                required_place = place
-                break
-
-        if required_place and required_place in LOCATIONS:
-            dist = get_distance((agent.x, agent.y), LOCATIONS[required_place])
-            if dist > 150:
-                return (
-                    f"Must be near {required_place} to work as {jobname} "
-                    f"({dist:.0f}m away)."
-                ), False, 60
-
-        pay = agent.hourly_wage * hours
-        agent.job    = jobname
-        agent.money += pay
-        agent.stress  = min(100.0, agent.stress  + (5.0 * hours))
-        agent.hunger  = min(100.0, agent.hunger  + (10.0 * hours))
-        agent.energy  = max(0.0, agent.energy - (15.0 * hours))
-
-        return (
-            f"Worked as {jobname} for {hours:.1f}h. Earned ${pay:.2f}. "
-            f"Money: ${agent.money:.2f}, Energy: {agent.energy:.1f}, Stress: {agent.stress:.1f}."
-        ), True, time_cost
-
-    # ── attack_person ────────────────────────────────────────────────
-    if name == "attack_person":
-        target_name = str(args.get("person", ""))[:50]
-        if not target_name: return "No target specified.", False, 60
-
-        target_agent = next(
-            (a for a in world.agents.values() if a.name.lower() == target_name.lower() and a.alive),
-            None,
-        )
-        if target_agent is None: return f"Target '{target_name}' not found or not alive.", False, 60
-        if target_agent.id == agent.id: return "You cannot attack yourself.", False, 60
-
-        dist = get_distance((agent.x, agent.y), (target_agent.x, target_agent.y))
-        if dist > 20: return f"Target too far ({dist:.0f}m). Must be within 20m.", False, 60
-
-        damage = random.uniform(5, 25)
-        target_agent.health = max(0.0,   target_agent.health - damage)
-        target_agent.stress = min(100.0, target_agent.stress + 15.0)
-        agent.stress        = min(100.0, agent.stress        + 10.0)
-
-        target_agent.pending_notifications.append(
-            f"{agent.name} attacked you! ({damage:.1f} damage)"
-        )
-
-        result_msg = (
-            f"Attacked {target_name}, dealt {damage:.1f} damage. "
-            f"Their health: {target_agent.health:.1f}."
-        )
-        if target_agent.health <= 0:
-            target_agent.alive = False
-            from logger import log_death, log_global
-            log_death(target_agent)
-            log_global({
-                "event":     "agent_death",
-                "agent":     target_agent.name,
-                "killed_by": agent.name,
-                "sim_time":  world.sim_time,
-            })
-            result_msg += " TARGET DIED!"
-
-        return result_msg, True, time_cost
-
-    # ── talk_to ──────────────────────────────────────────────────────
-    if name == "talk_to":
-        target_name = str(args.get("person", ""))[:50]
-        message     = str(args.get("message", "")).strip()[:300]
-
-        if not target_name: return "No person specified.", False, 60
-        if not message: return "Must provide a non-empty 'message'.", False, 60
-
-        target_agent = next(
-            (a for a in world.agents.values() if a.name.lower() == target_name.lower() and a.alive),
-            None,
-        )
-        if target_agent is None: return f"'{target_name}' not found or not alive.", False, 60
-        if target_agent.id == agent.id: return "You cannot talk to yourself.", False, 60
-
-        dist = get_distance((agent.x, agent.y), (target_agent.x, target_agent.y))
-        if dist > 50: return f"{target_name} is too far ({dist:.0f}m). Must be within 50m.", False, 60
-
-        msg_lower = message.lower()
-        if any(w in msg_lower for w in ["help", "sorry", "thanks", "please"]):
-            happiness_delta, target_stress_delta = 4, 0
-        elif any(w in msg_lower for w in ["insult", "hate", "stupid", "shut up"]):
-            happiness_delta, target_stress_delta = -5, 10
-        else:
-            happiness_delta, target_stress_delta = 1, 0
-
-        if happiness_delta >= 0:
-            agent.stress = max(0.0, agent.stress - 2.0)
-        else:
-            agent.stress = min(100.0, agent.stress + 5.0)
-
-        agent.happiness        = _clamp(agent.happiness        + happiness_delta)
-        target_agent.happiness = _clamp(target_agent.happiness + happiness_delta)
-        target_agent.stress    = _clamp(target_agent.stress    + target_stress_delta)
-
-        rel_changed = False
-        if _check_social_cooldown(agent, target_name, world.sim_time):
-            rel_changed = True
-            if happiness_delta > 0:
-                agent.relationships        = min(25, agent.relationships + 1)
-                target_agent.relationships = min(25, target_agent.relationships + 1)
-            elif happiness_delta < 0:
-                agent.relationships        = max(0, agent.relationships - 1)
-                target_agent.relationships = max(0, target_agent.relationships - 1)
-
-        target_agent.pending_notifications.append(f"{agent.name} said to you: \"{message}\"")
-        cooldown_msg = "" if rel_changed else " (Relationship unchanged: too soon)."
-        return (
-            f"Talked to {target_name}: \"{message}\". "
-            f"Happiness: {agent.happiness:.1f}.{cooldown_msg}"
-        ), True, time_cost
-
-    # ── seek_medicalcare ─────────────────────────────────────────────
     if name == "seek_medicalcare":
-        hospital_pos = LOCATIONS.get("Hospital")
-        if hospital_pos:
-            dist = get_distance((agent.x, agent.y), hospital_pos)
-            if dist > 150:
-                return (
-                    f"Must be near Hospital to seek medical care "
-                    f"({dist:.0f}m away). Use move_to first."
-                ), False, 60
-
         cost = 50.0
-        if agent.money < cost: return f"Cannot afford medical care. Have ${agent.money:.2f}.", False, 60
+        if agent.money < cost: return "Cannot afford medical care.", False, 60
+        agent.money -= cost
+        agent.health = min(100.0, agent.health + 30.0)
+        return "Received medical care. Health restored.", True, 600
 
-        agent.money  -= cost
-        _record_expense(agent, cost)
-        agent.health  = min(100.0, agent.health  + 30.0)
-        agent.stress  = max(0.0,   agent.stress  - 10.0)
-
-        return (f"Received medical care. Health: {agent.health:.1f}, Money: ${agent.money:.2f}."), True, time_cost
-
-    # ── get_education ────────────────────────────────────────────────
-    if name == "get_education":
-        if agent.energy < 10.0: return "Too tired to study. Please sleep.", False, 60
-
-        edu_type = str(args.get("type", "")).strip()[:50]
-        if not edu_type: return "No education type specified.", False, 60
-
-        edu_lower = edu_type.lower()
-        formal_keywords = ["high", "bachelor", "college", "university", "master", "phd", "doctorate"]
-        required_place = "School" if any(k in edu_lower for k in formal_keywords) else "Library"
-        
-        if required_place in LOCATIONS:
-            dist = get_distance((agent.x, agent.y), LOCATIONS[required_place])
-            if dist > 150:
-                return f"Must be near {required_place} for {edu_type} ({dist:.0f}m away).", False, 60
-
-        cost = 300
-        edu_gain = 5
-        if "phd" in edu_lower or "doctorate" in edu_lower: cost = 8000; edu_gain = 15
-        elif "master" in edu_lower: cost = 4000; edu_gain = 12
-        elif "bachelor" in edu_lower or "college" in edu_lower: cost = 2000; edu_gain = 10
-
-        if agent.money < cost:
-            return f"Cannot afford {edu_type}. Need ${cost:.2f}, have ${agent.money:.2f}.", False, 60
-
-        agent.money     -= cost
-        _record_expense(agent, cost)
-        agent.education  = min(100.0, agent.education + edu_gain)
-        agent.energy     = max(0.0, agent.energy - 30.0) # Studying is exhausting
-
-        wage_increase = edu_gain * 0.1 # Realistically scaled
-        agent.hourly_wage += wage_increase
-
-        return (
-            f"Studied {edu_type} for 8 hours. Education: {agent.education:.1f}. "
-            f"Wage increased by ${wage_increase:.2f} to ${agent.hourly_wage:.2f}/hr."
-        ), True, time_cost
-
-    # ── call_person ──────────────────────────────────────────────────
-    if name == "call_person":
-        target_name = str(args.get("person", ""))[:50]
-        message     = str(args.get("message", "")).strip()[:300]
-        if not target_name: return "No person specified.", False, 60
-        
-        target_agent = next(
-            (a for a in world.agents.values() if a.name.lower() == target_name.lower() and a.alive),
-            None,
-        )
-        if target_agent is None: return f"'{target_name}' not found or not alive.", False, 60
-        
-        agent.money -= 1.0
-        _record_expense(agent, 1.0)
-        target_agent.pending_notifications.append(f"{agent.name} called you: \"{message}\"")
-        return f"Called {target_name}: \"{message}\".", True, time_cost
-
-    # ── interact_with ────────────────────────────────────────────────
-    if name == "interact_with":
-        target = str(args.get("person_or_object", "")).strip()[:50]
-        action = str(args.get("action", "generic")).lower()[:50]
-        if not target: return "No person or object specified.", False, 60
-
-        target_agent = next(
-            (a for a in world.agents.values() if a.name.lower() == target.lower() and a.alive),
-            None,
-        )
-
-        if target_agent:
-            if target_agent.id == agent.id: return "You cannot interact with yourself.", False, 60
-            dist = get_distance((agent.x, agent.y), (target_agent.x, target_agent.y))
-            if dist > 20: return f"{target} is too far ({dist:.0f}m).", False, 60
-
-            target_happiness  = 2
-            notification      = f"{agent.name} interacted with you ({action})."
-            if action in ["hug", "hold_hand", "pat_back"]:
-                if target_agent.relationships < 3: target_happiness = -5; notification = f"{agent.name} tried to hug/hold you (felt uncomfortable)."
-                else: target_happiness = 5; notification = f"{agent.name} hugged/held you."
-            elif action in ["stare", "shove", "knock_shoulder"]:
-                target_happiness  = -4; notification = f"{agent.name} {action}d you."
-
-            target_agent.happiness = _clamp(target_agent.happiness + target_happiness)
-            target_agent.pending_notifications.append(notification)
-            return f"Interacted with {target} ({action}).", True, time_cost
-
-        # Fallback for Objects
-        return f"You interacted with the object: {target} ({action}).", True, time_cost
-
-    # ── change_status ────────────────────────────────────────────────
-    if name == "change_status":
-        person   = str(args.get("person", ""))[:50]
-        rel_type = str(args.get("type", ""))[:30]
-        value    = str(args.get("value", ""))[:100]
-
-        if person and rel_type:
-            target_agent = next((a for a in world.agents.values() if a.name.lower() == person.lower() and a.alive), None)
-            if target_agent is None: return f"Person '{person}' not found.", False, 60
-
-            req_key = person.lower()
-            target_key = agent.name.lower()
-
-            if agent.pending_status_requests.get(req_key) == rel_type.lower():
-                agent.relationships_status = rel_type.lower()
-                target_agent.relationships_status = rel_type.lower()
-                del agent.pending_status_requests[req_key]
-                target_agent.pending_notifications.append(f"{agent.name} accepted your status change to: {rel_type}.")
-                return f"Relationship status with {person} changed to: {rel_type}.", True, time_cost
-            else:
-                target_agent.pending_status_requests[target_key] = rel_type.lower()
-                target_agent.pending_notifications.append(f"{agent.name} wants to change status to: {rel_type}.")
-                return f"Requested status change to '{rel_type}' with {person}.", True, time_cost
-
-        if value:
-            agent.beliefs = value
-            return f"Belief updated to: \"{value}\".", True, time_cost
-
-        return "Specify person+type for relationship status, or value for belief.", False, 60
-
-    return f"Tool '{name}' is not implemented.", False, 60
+    return f"Tool {name} not found.", False, 60

@@ -4,3 +4,6 @@ python/__pycache__/
 .env
 llama.cpp
 models/
+logs_1/
+logs_2/
+cache
