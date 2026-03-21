@@ -51,6 +51,10 @@ class AgentState:
     task_state: str = "idle" 
     pending_task_data: Dict[str, Any] = field(default_factory=dict)
 
+    # Background Summarizer Thread Locks
+    pending_summary: str = None
+    is_summarizing: bool = False
+
     first_turn: bool = True
     total_prompt_tokens: int = 0
     social_cooldowns: Dict[str, float] = field(default_factory=dict)

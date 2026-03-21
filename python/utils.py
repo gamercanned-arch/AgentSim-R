@@ -4,6 +4,7 @@ import urllib.request
 import urllib.error
 import jinja2
 import subprocess
+import threading
 
 from config import (PROMPTS_DIR, TOOLS_PATH, MAX_NEW_TOKENS, CHARS_PER_TOKEN, LLAMA_CLI_PATH, SUMMARIZER_MODEL_PATH, SUMMARIZER_PROMPT_TEMPLATE)
 from locations import get_distance_3d, get_current_location_def
@@ -11,6 +12,14 @@ from tools import ITEM_CATALOG
 
 SERVER_URL = "http://127.0.0.1:8080"
 jinja_env = jinja2.Environment(loader=jinja2.FileSystemLoader(PROMPTS_DIR))
+
+# OPTIMIZATION: Load tools.json into RAM exactly once at startup
+try:
+    with open(TOOLS_PATH, encoding="utf-8") as f:
+        GLOBAL_TOOLS_LIST = json.load(f)["tools"]
+except Exception as e:
+    print(f"[WARNING] Could not load tools.json: {e}")
+    GLOBAL_TOOLS_LIST = []
 
 def _get_time_strings(sim_time: float, return_date=True):
     total_minutes = int(sim_time // 60)
@@ -26,23 +35,41 @@ def is_market_open(sim_time: float) -> bool:
         if h < 16: return True
     return False
 
+def _run_summarizer_thread(agent, text_chunk):
+    """Executes the llama-cli summarization completely in the background."""
+    prompt = SUMMARIZER_PROMPT_TEMPLATE.format(text_chunk=text_chunk)
+    try:
+        res = subprocess.run([LLAMA_CLI_PATH, "-m", SUMMARIZER_MODEL_PATH, "-p", prompt, "-n", "150", "--log-disable"], 
+                             capture_output=True, text=True, timeout=30)
+        agent.pending_summary = res.stdout.strip()
+    except Exception:
+        agent.pending_summary = "Summary generation failed."
+
 def trigger_summarizer(agent):
-    if len(agent.chat_history) > 22:
+    # 1. Thread-Safe Merge: If a background summary finished, inject it now synchronously.
+    if agent.pending_summary:
         turn_1 = agent.chat_history[:2]
-        chunk = agent.chat_history[2:22]
         remainder = agent.chat_history[22:]
+        agent.chat_history = turn_1 + [{"role": "system", "content": f"[ROLLING MEMORY]: {agent.pending_summary}"}] + remainder
+        agent.pending_summary = None
+        agent.is_summarizing = False
+
+    # 2. Trigger new background summary if limit reached
+    if len(agent.chat_history) > 22 and not agent.is_summarizing:
+        agent.is_summarizing = True
+        chunk = agent.chat_history[2:22]
         text_chunk = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in chunk])
         
-        prompt = SUMMARIZER_PROMPT_TEMPLATE.format(text_chunk=text_chunk)
-        
-        try:
-            res = subprocess.run([LLAMA_CLI_PATH, "-m", SUMMARIZER_MODEL_PATH, "-p", prompt, "-n", "150", "--log-disable"], 
-                                 capture_output=True, text=True, timeout=30)
-            summary = res.stdout.strip()
-        except Exception as e:
-            summary = "Summary generation failed."
+        t = threading.Thread(target=_run_summarizer_thread, args=(agent, text_chunk))
+        t.daemon = True
+        t.start()
 
-        agent.chat_history = turn_1 + [{"role": "system", "content": f"[ROLLING MEMORY]: {summary}"}] + remainder
+def manage_slot(agent_id: int, action: str):
+    url = f"{SERVER_URL}/slots/0?action={action}"
+    data = json.dumps({"filename": f"agent_{agent_id}.bin"}).encode('utf-8')
+    req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+    try: urllib.request.urlopen(req)
+    except urllib.error.URLError: pass
 
 def build_messages(agent_id: int, world, notifications: str, failed_calls: int) -> list:
     agent = world.agents[agent_id]
@@ -109,19 +136,31 @@ Notifs: {notifications}
     return [{"role": "system", "content": agent.system_prompt}] + agent.chat_history
 
 def call_server(messages: list, agent_id: int) -> tuple:
-    with open(TOOLS_PATH, encoding="utf-8") as f: tools_list = json.load(f)["tools"]
+    manage_slot(agent_id, action="restore")
+
     template = jinja_env.get_template("template.jinja")
-    prompt_text = template.render(messages=messages, tools=tools_list, add_generation_prompt=True)
+    prompt_text = template.render(messages=messages, tools=GLOBAL_TOOLS_LIST, add_generation_prompt=True)
     
     req = urllib.request.Request(f"{SERVER_URL}/completion", data=json.dumps({
-        "prompt": prompt_text, "n_predict": MAX_NEW_TOKENS, "temperature": 0.7, 
-        "top_p": 0.95, "stop": ["<|im_end|>"]
+        "prompt": prompt_text, 
+        "n_predict": MAX_NEW_TOKENS, 
+        "temperature": 0.7, 
+        "top_p": 0.95, 
+        "stop": ["<|im_end|>"]
     }).encode('utf-8'), headers={'Content-Type': 'application/json'})
     
     try:
         with urllib.request.urlopen(req) as res:
             res_data = json.loads(res.read().decode('utf-8'))
             out = res_data.get("content", "").strip()
+            
+            prompt_tokens = res_data.get("tokens_evaluated", len(prompt_text) // CHARS_PER_TOKEN)
+            gen_tokens = res_data.get("tokens_predicted", len(out) // CHARS_PER_TOKEN)
+            
             if not out.startswith("<think>"): out = f"<think>\n{out}"
-            return out, 0, 0
-    except Exception as e: return f"[SERVER ERROR] {e}", 0, 0
+            
+            manage_slot(agent_id, action="save")
+            return out, prompt_tokens, gen_tokens
+            
+    except Exception as e: 
+        return f"[SERVER ERROR] {e}", 0, 0

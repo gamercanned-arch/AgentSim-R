@@ -91,7 +91,6 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
         agent.fail_counter += 1
         return "You are in a task. You must use `pick_item` or `interact_with` to proceed!", False, 60
 
-    # ── sleep ────────────────────────────────────────────────────────
     if name == "sleep":
         hours = max(1.0, min(12.0, float(args.get("hours", 8))))
         time_cost = int(hours * 3600)
@@ -107,7 +106,6 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
         if not is_home: msg += " (Poor sleep outside home: capped at 60%)."
         return msg, True, time_cost
 
-    # ── move_to & walk ───────────────────────────────────────────────
     if name == "move_to":
         place = str(args.get("place", ""))[:50]
         if place.lower() in ["house", "home"]: place = f"Home_{agent.name}"
@@ -153,7 +151,6 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
         agent.location = loc_def.name if loc_def else "Outside"
         return f"Walked {direction}. Location updated to: {agent.location}.", True, 60
 
-    # ── pick_item / unequip ──────────────────────────────────────────
     if name == "pick_item":
         item = args.get("item_name", "")
         if item.lower() in ["none", "store", "unequip", "put away", ""]:
@@ -180,11 +177,19 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
         agent.currently_holding = agent.inventory.pop(idx)
         return f"Now holding {item} in hand.", True, 30
 
-    # ── work_job / get_education (INTERACTIVE EXAMS) ─────────────────
     if name in ["work_job", "get_education"]:
         if agent.task_state != "idle": return "Already doing a task.", False, 60
         job_raw = args.get("jobname", "generic") if name == "work_job" else "education"
         hours = float(args.get("hours", 8) if name == "work_job" else 8)
+        
+        # RESTORED: Original Education Tuition Costs
+        if name == "get_education":
+            tuition = 2000
+            if "phd" in job_raw.lower() or "doctorate" in job_raw.lower(): tuition = 8000
+            elif "master" in job_raw.lower(): tuition = 4000
+            if agent.money < tuition: return f"Cannot afford tuition (${tuition}).", False, 60
+            agent.money -= tuition
+            agent.pending_notifications.append(f"Paid ${tuition} in tuition fees.")
         
         if agent.energy < (hours * 10): 
             return f"Need {hours*10} energy to work {hours}h. Have {agent.energy:.1f}.", False, 60
@@ -202,7 +207,6 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
         agent.pending_task_data = {"type": name, "hours": hours, "flavor": matched_flavor}
         return f"[SCENARIO INITIATED] Shift started as {job_raw}. To begin, use `pick_item('{matched_flavor['pick']}')` from your workspace.", True, 60
 
-    # ── interact_with / change_status ─────────────────────────────────
     if name == "interact_with":
         target = str(args.get("person_or_object", ""))
         action = str(args.get("action", ""))
@@ -275,7 +279,6 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
                 return f"Requested status change to '{rel_type}' with {person}.", True, 30
         return "Invalid parameters.", False, 60
 
-    # ── SOCIAL / AGGRESSION TOOLS (DND ENFORCED) ──────────────────────
     if name == "attack_person":
         t_name = str(args.get("person", ""))
         target = next((a for a in world.agents.values() if a.name.lower() == t_name.lower() and a.alive), None)
@@ -361,16 +364,28 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
         agent.social_fulfillment = min(100.0, agent.social_fulfillment + 15)
         return f"Gave ${amount:.2f} to {t_name}.", True, 60
 
-    # ── FINITE ITEM MANAGEMENT & MARKET ───────────────────────────────
     if name == "buy_item":
         item = str(args.get("item", ""))[:50]
+        
+        # RESTORED: Housing Equity Logic
         if item in ITEM_CATALOG.get("housing", {}):
             price = ITEM_CATALOG["housing"][item]
-            if agent.money < price: return "Cannot afford housing.", False, 60
+            sell_price = 0.0
+            old_home = agent.current_home
+            if old_home:
+                old_price = ITEM_CATALOG["housing"].get(old_home, 0)
+                sell_price = old_price * 0.7
+                
+            if (agent.money + sell_price) < price: 
+                return f"Cannot afford {item}. Need ${price}, have ${agent.money:.2f} + ${sell_price:.2f} home equity.", False, 60
+                
+            agent.money += sell_price
+            if old_home in agent.owned_locations:
+                agent.owned_locations.remove(old_home)
             agent.money -= price
             agent.owned_locations.append(item)
             agent.current_home = item
-            return f"Bought {item}. Moved in.", True, 3600
+            return f"Sold {old_home} for ${sell_price:.2f}. Bought {item} for ${price}. Moved in.", True, 3600
         
         if len(agent.inventory) >= MAX_INVENTORY: return "Inventory full.", False, 60
         if world.store_inventory.get(item, 0) <= 0: return f"'{item}' is completely out of stock in the village.", False, 60
@@ -407,7 +422,12 @@ def execute_tool(tool_call_str: str, agent_id: int, world: WorldState) -> tuple:
         f_stats = ITEM_CATALOG["food"].get(item, {"hunger": 20, "time": 600, "caffeine": 0})
         agent.hunger = max(0.0, agent.hunger - f_stats["hunger"])
         agent.caffeine_level += f_stats["caffeine"]
-        return f"Ate {item}. Hunger reduced.", True, f_stats["time"]
+        
+        # RESTORED: Health & Energy Buffs from Food
+        agent.health = min(100.0, agent.health + 2.0)
+        agent.energy = min(100.0, agent.energy + 5.0)
+        
+        return f"Ate {item}. Hunger reduced. Health +2, Energy +5.", True, f_stats["time"]
 
     if name == "do_hobby":
         item = str(args.get("item", ""))[:50]
