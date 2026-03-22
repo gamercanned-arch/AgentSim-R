@@ -2,97 +2,102 @@
   "tools": [
     {
       "name": "talk_to",
-      "description": "Talk to someone (within 50m). Others nearby will overhear. Fails if target is working/sleeping.",
+      "description": "Talk to someone in person within 50m. Others nearby may overhear if they are awake and available.",
       "params": ["person", "message"]
     },
     {
       "name": "eat_food",
-      "description": "Eat a food item from inventory or buy immediately.",
+      "description": "Eat a food item from your hand, inventory, or buy one abstractly from village stock.",
       "params": ["item"]
     },
     {
       "name": "buy_item",
-      "description": "Buy an item to your inventory, or purchase a property/house to move in.",
+      "description": "Buy an item abstractly from village stock, or buy a home if you can afford it.",
       "params": ["item"]
     },
     {
       "name": "work_job",
-      "description": "Work to earn money. Initiates a 3-step interactive scenario. Follow the backend prompts to use pick_item and interact_with.",
+      "description": "Work to earn money. Must be near the correct workplace and begins a 3-step interactive scenario.",
       "params": ["jobname", "hours"]
     },
     {
       "name": "get_education",
-      "description": "Study to boost wage. Initiates a 3-step interactive exam. Follow the backend prompts.",
-      "params": ["type"]
+      "description": "Study to improve education and wage. Must be near School or Library and begins a 3-step exam scenario.",
+      "params": ["type", "hours"]
     },
     {
       "name": "seek_medicalcare",
-      "description": "Visit Hospital to restore health.",
+      "description": "Receive medical care near the Hospital.",
       "params": []
     },
     {
       "name": "move_to",
-      "description": "Travel to a location. Drains Energy based on distance.",
+      "description": "Travel to a named location. Drains Energy based on distance.",
       "params": ["place"]
     },
     {
       "name": "walk",
-      "description": "Walk 30m in a direction. E.g. 'north', 'south'.",
+      "description": "Walk 30m in a direction such as north, south, east, west, northeast, northwest, southeast, or southwest.",
       "params": ["direction"]
     },
     {
       "name": "call_person",
-      "description": "Call someone by phone. Fails if target is working/sleeping.",
+      "description": "Call someone by phone. No proximity required, but it fails if they are busy or sleeping.",
       "params": ["person", "message"]
     },
     {
       "name": "interact_with",
-      "description": "Interact with person, object, or answer a Test (e.g., action='A').",
+      "description": "Interact with a nearby person or a visible same-floor object, or answer the required work/study scenario.",
       "params": ["person_or_object", "action"]
     },
     {
       "name": "change_status",
-      "description": "Change relationship status or personal beliefs (e.g. your long term goals).",
+      "description": "Update your beliefs/goals, or request/accept a relationship status change with a nearby person.",
       "params": ["person", "type", "value"]
     },
     {
       "name": "attack_person",
-      "description": "Attack another person within 20m. Fails if target is working/sleeping.",
+      "description": "Attack another person within 20m. Fails if they are busy or sleeping.",
       "params": ["person"]
     },
     {
       "name": "buy_stock",
-      "description": "Buy shares of the village stock.",
+      "description": "Buy whole shares of the village stock. If the market is closed, the order is queued.",
       "params": ["shares"]
     },
     {
       "name": "sell_stock",
-      "description": "Sell shares of the village stock.",
+      "description": "Sell whole shares of the village stock. If the market is closed, the order is queued.",
       "params": ["shares"]
     },
     {
       "name": "sleep",
-      "description": "Sleep to restore energy. During this time, you cannot be interacted with.",
+      "description": "Sleep for a number of hours to recover Energy. Sleeping agents are unavailable.",
       "params": ["hours"]
     },
     {
       "name": "do_hobby",
-      "description": "Use an item (like a Book or Art Supplies) to reduce stress.",
+      "description": "Use a proper hobby item like Book, Art Supplies, or Notebook to reduce stress.",
       "params": ["item"]
     },
     {
       "name": "give_item",
-      "description": "Give an item from your inventory to someone within 20m. Fails if target is working/sleeping.",
+      "description": "Give an item from your hand or inventory to someone within 20m. Fails if they are busy.",
       "params": ["person", "item"]
     },
     {
       "name": "give_money",
-      "description": "Transfer funds to someone within 20m. Fails if target is working/sleeping.",
+      "description": "Transfer money to someone within 20m. Fails if they are busy or sleeping.",
       "params": ["person", "amount"]
     },
     {
       "name": "pick_item",
-      "description": "Move an item from inventory to your hands. To put an item away, use item_name='None' or 'store'.",
+      "description": "Move an item from inventory to your hand, or pick up a nearby dropped item or corpse loot item. Use item_name='None' or 'store' to put away what you are holding.",
+      "params": ["item_name"]
+    },
+    {
+      "name": "drop_item",
+      "description": "Drop a held item or a named inventory item onto the ground at your current position.",
       "params": ["item_name"]
     }
   ]

@@ -2,226 +2,686 @@
 
 ## Overview
 
-AgentSim-R is a synthetic simulation consisting of `LM Agents`. It is a city-scale, agent-based simulation framework designed to model everyday human behavior using explicit rules, measurable constraints, and mathematically grounded variables. The system intentionally avoids encouraging long reasoning and instead relies on role-based agents operating within realistic economic, social, and physical limits, allowing generative creativity and beliefs.
+AgentSim-R is a village-scale, agent-based simulation framework where language-model agents act under explicit constraints: time, money, energy, health, proximity, open hours, inventory limits, and world state.
 
-> [!NOTE]   
-> **Summary**: This is a project aimed to observe *emergent behavior* when multiple agents are allowed to interact with environments freely. It somewhat aims to anticipate the behaviors such AI Agents would show in the real world.
+The goal is not pure freeform roleplay. The goal is to observe emergent social, economic, and behavioral patterns when agents are forced to make grounded decisions in a shared environment.
 
-## Technical Details
+Key properties:
 
-**Model Used:**  
-[HauhauCS/Qwen3.5-4B-Uncensored](https://huggingface.co/HauhauCS/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive)  
-> Note: Derived from [Qwen/Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B)
+- **Event-driven simulation** via per-agent `busy_until`
+- **Explicit world geometry** with 3D locations and interactables
+- **Finite inventory and finite village stock**
+- **Health, hunger, energy, stress, happiness, education, and relationship dynamics**
+- **Multi-step work/study tasks**
+- **Rolling memory summarization** to preserve long-term context
+- **Stock market with market hours, queued orders, and trade impact**
+- **Detailed per-turn logging of model inputs and outputs**
 
-**Model Info:**
-- Quantization: [Q4_K_M](https://huggingface.co/docs/optimum/en/concept_guides/quantization)
-- Temperature: [0.7](https://www.promptingguide.ai/introduction/settings)
-- Repeat Penalty: [1.1](https://www.promptingguide.ai/introduction/settings)
-- Top_p: 0.95
-- Min_p: 0
-- Top_k: 20
+---
 
-## Running the Simulation
+## Important note on determinism
 
-Run these:
+The Python-side simulation uses seeded randomness where applicable, but the overall system is **not guaranteed deterministic across runs** because model generation depends on the external inference server and sampling settings.
 
-```Bash
-llama-server -m "C:\Users\user\OneDrive\Documents\Abhik\AgentSim-R\models\Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf" -c 131072 -ngl 999 -ctk q8_0 -ctv q8_0 --parallel 1 --slot-save-path "C:\Users\user\OneDrive\Documents\Abhik\AgentSim-R\cache"
+So:
+
+- Python/NumPy randomness is seeded
+- simulation logic is rule-based
+- but LLM outputs may still vary between runs unless your inference stack is configured for deterministic generation
+
+---
+
+## Repository structure
+
+```text
+/prompts
+  alex.txt
+  common_prompt.txt
+  ethan.txt
+  jamie.txt
+  jordan.txt
+  mia.txt
+  taylor.txt
+  template.jinja
+
+/python
+  __init__.py
+  config.py
+  locations.py
+  logger.py
+  scheduler.py
+  sim.py
+  state.py
+  tools.py
+  utils.py
+
+tools.json
+README.md
+requirements.txt
 ```
 
-(In this repository)
-```Bash
+---
+
+## Running the simulation
+
+### 1. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 2. Start `llama-server`
+
+Example:
+
+```bash
+llama-server -m /path/to/model.gguf -c 131072 --parallel 1 --slot-save-path ./cache
+```
+
+Adjust flags and paths as needed for your system and hardware.
+
+### 3. Run the simulation
+
+Preferred command from repo root:
+
+```bash
+python python/sim.py
+```
+
+Equivalent alternative:
+
+```bash
 cd python
-python/sim.py
+python sim.py
 ```
 
-> [!CAUTION]   
-> (contains setup, llama-server launch, simulation loop, and logging)
-
-### 1. Core Objectives
-
-The primary objective of AgentSim-R is to simulate realistic human social and economic behavior in a calm, non-fantastical urban environment. The framework seeks to answer how complex societal patterns emerge from simple, deterministic rules when individuals pursue realistic goals under constraint.
-
-AgentSim-R aims to serve as a reusable foundation for behavioral economics research, social policy testing, urban planning simulations, and longitudinal studies of stress, education, health, and social isolation.
-
-### 2. Design Philosophy and Constraints
-
-AgentSim-R is explicitly grounded in realism. All agent actions are constrained by time, money, distance, education level, health, and availability. 
-
-Determinism is a core requirement. Given the same initial state and random seed, the simulation will produce identical outcomes.
-
-**Event-Driven Architecture (Parallel Simulation):**  
-Agents are scheduled on an individual event queue (`busy_until` timestamps). This means agents operate conceptually in **parallel**. One agent can work for 8 hours (jumping their personal schedule forward), while the remaining agents continue to interact, move, and make short conversational decisions sequentially in the background.
-
-### 3. World Structure and Spatial Model
-
-The simulation world is represented as a continuous two-dimensional plane corresponding to a village layout on a 5000×5000 metre grid. Every location is assigned fixed coordinates.
-
-Simulation time is driven entirely by tool execution costs — each tool call advances an agent's `busy_until` clock by a fixed number of seconds (e.g., `move_to` = 300 s, `work_job` = 3600 s).
-
-The simulation relies on several mathematical models:
-
-- Happiness Model
-- Health & Energy Decay Model
-- Proximity-based Interaction Rules
-- Stock Market Model
-- Stress Model
-
 ---
 
-#### (i) Happiness Model
+## Prompting and tool-call format
 
-Agent happiness is updated every passive tick using a smooth blend toward a target value derived from health, relationships, and financial comfort:
+The simulation uses **XML-only** tool calling.
 
-$$
-H^*= 0.3 \cdot \text{health} + 0.3 \cdot \min\!\left(100,\, \frac{\text{relationships}}{5} \times 100\right) + 0.4 \times 100 \cdot \tanh\!\left(\frac{\text{money}}{\text{expenses} + \varepsilon}\right)
-$$
-
-$$
-\text{happiness}_{t+1} = \max\!\left(0,\, \min\!\left(100,\, 0.7 \cdot \text{happiness}_t + 0.3 \cdot H^*\right)\right)
-$$
-
----
-
-#### (ii) Health & Energy Decay Model
-
-All agents now possess an **Energy** metric. Energy decays passively over time and drops actively when working or studying. Depleted energy accelerates health decay. Health is calculated via:
-
-$$
-\Delta\text{health} = \Bigl[-\bigl(0.5 \cdot \text{stress} + 0.3 \cdot \text{hunger} + (\text{energy penalty})\bigr) + 0.1 \cdot \text{happiness}\Bigr] \cdot e^{0.01 \cdot \text{age}} \cdot 0.05
-$$
-
-When health reaches 0, the agent dies. Agents are highly encouraged to use the `sleep` tool to recover Energy.
-
----
-
-#### (iii) Proximity-based Interaction Rules
-
-All person-targeting tools enforce hard distance limits:
-
-| Tool | Max Distance | Notes |
-|------|-------------|-------|
-| `talk_to` | 50 m | In-person conversation |
-| `interact_with` | 20 m | Physical interaction |
-| `attack_person` | 20 m | Physical contact required |
-| `change_status` | 30 m | Relationship change (requires reciprocal acceptance) |
-| `work_job` | 150 m | Must be near workplace |
-| `seek_medicalcare` | 150 m | Must be near Hospital |
-| `get_education` | 150 m | Must be near School or Library |
-
----
-
-#### (iv) Stock Market Model
-
-The market price follows geometric Brownian motion, updated once per passive tick (every simulated hour):
-
-$$
-P_{t+1} = \max\!\left(10,\; P_t \cdot \exp\!\left[\left(\mu - \tfrac{1}{2}\sigma^2\right) + \sigma\,\varepsilon_t\right]\right)
-$$
-
----
-
-#### (v) Stress Model
-
-Agent stress is updated every passive tick:
-
-$$
-\Psi^* = \frac{
-  \overbrace{w_1 \cdot \max(0,\, R - 1)^2}^{\text{Relationship Tension}} +
-  \overbrace{w_2 \cdot \dfrac{\text{expenses}}{\text{money} + 1}}^{\text{Financial Pressure}}
-}{
-  1 + \alpha \cdot \text{happiness} + \beta \cdot \text{hourly\_wage}
-}
-$$
-
----
-
-#### (vi) Economy & Education
-
-- Agents start owning a home based on their character profile; rent is non-existent.
-- Expenses decay passively at **1% per hour** to maintain a rolling recency-weighted memory of financial burden.
-- Agents earn according to their specific `hourly_wage`.
-- Utilising the `get_education` tool directly augments the agent's baseline `hourly_wage`, modelling career progression.
-
----
-
-### 4. Agent Architecture and Common Rule Template
-
-All agents share an identical execution loop and rule template. Differences emerge solely from initial attributes, role definitions, and state evolution.
-
-**Tool calling format:**
+Agents must return exactly one tool call in this format:
 
 ```xml
-<tool_call>{"name": "tool_name", "arguments": {"param1": "value1", "param2": "value2"}}</tool_call>
+<tool_call>
+<function=tool_name>
+<parameter=param_name>
+value
+</parameter>
+</function>
+</tool_call>
 ```
 
-**Available Tools:**
+JSON-in-tag tool calls are **not supported**.
 
-| # | Tool | Parameters | Notes |
-|---|------|-----------|-------|
-| 1 | `talk_to` | `person`, `message` | Within 50 m |
-| 2 | `eat_food` | `item` | Uses inventory first, then buys |
-| 3 | `buy_item` | `item` | Services consumed immediately |
-| 4 | `work_job` | `jobname` | Location-bound jobs need proximity |
-| 5 | `seek_medicalcare` | — | Within 150 m of Hospital |
-| 6 | `get_education` | `type` | Within 150 m of School or Library; increases wage |
-| 7 | `move_to` | `place` | Teleports to named location |
-| 8 | `call_person` | `person`, `message` | No proximity required |
-| 9 | `interact_with` | `person_or_object`, `action` | Within 20 m for persons |
-| 10 | `change_status` | `person`+`type` or `value` | ≤30m proximity. Requires reciprocal request |
-| 11 | `attack_person` | `person` | Within 20 m; uncensored behaviour monitoring |
-| 12 | `buy_stock` | `shares` | buys stocks |
-| 13 | `sell_stock` | `shares` | sells stocks |
-| 14 | `walk` | `direction` | moves 30m in cardinal direction |
-| 15 | `sleep` | `hours` | Sleeps to restore energy. |
+Prompt construction uses:
 
-> [!NOTE]
-> `attack_person` is included because the model is uncensored. It allows monitoring of emergent aggressive behaviour without suppressing it artificially.
+1. `prompts/common_prompt.txt`
+2. persona prompt, e.g. `prompts/alex.txt`
+3. dynamic simulation rules
+4. rolling memory summary, when available
 
 ---
 
-### 5. Agent Metrics
+## Simulation architecture
 
-Agents maintain explicit numeric state variables with defined bounds:
+The simulation is event-driven.
 
-| Metric | Type | Range | Updated by |
-|--------|------|-------|-----------|
-| `health` | float | 0–100 | Passive decay, `eat_food`, `seek_medicalcare`, `sleep` |
-| `energy` | float | 0–100 | Passive decay, `work_job`, `sleep` |
-| `happiness` | float | 0–100 | Passive formula, social tools |
-| `stress` | float | 0–100 | Passive formula, `work_job`, social tools |
-| `hunger` | float | 0–100 | Passive increase, `eat_food` |
-| `education` | float | 0–100 | `get_education` |
-| `relationships` | int | 0–25 | `talk_to`, `call_person`, `interact_with` |
-| `money` | float | ≥ 0 | All economic tools |
-| `expenses` | float | ≥ 0 | All spending tools; decays 1%/hr |
-| `hourly_wage` | float | ≥ 0 | Raised by education |
-| `relationships_status` | str | enum | `change_status` (reciprocal) |
+Each agent has a `busy_until` timestamp. At each scheduler step:
+
+1. the next available alive agent is selected
+2. passive hourly world updates are applied as time advances
+3. a prompt is built for that agent
+4. the LLM emits exactly one tool call
+5. the tool is executed
+6. the tool’s time cost advances that agent’s schedule
+
+This means agents operate conceptually in parallel, even though execution is serialized through the scheduler.
 
 ---
 
-### 6. Phase 1 Setup
+## World model
 
-In Phase 1, the following six agents are initialized with realistic starting conditions:
+The village is a continuous 3D coordinate space.
 
-| Name | Role | Age | Hourly Wage | Starting Cash | Starting Asset | Physical Start Pos |
-|------|------|-----|-------------|---------------|----------------|--------------------|
-| **Alex** | Freelance Developer | 28 | $50 | $5000 | Small House | Home_Alex |
-| **Jamie** | Nurse | 35 | $60 | $6000 | Apartment | Home_Jamie |
-| **Taylor** | Student | 21 | $20 | $20 | Small Apartment | Home_Taylor |
-| **Jordan** | Delivery Driver | 39 | $20 | $2000 | Apartment | Home_Jordan |
-| **Mia** | Teacher | 41 | $35 | $3500 | House | Home_Mia |
-| **Ethan** | Founder | 30 | $100 | $10000 | Luxury House | Home_Ethan |
+### Location types
+
+- public institutions and social areas:
+  - Hospital
+  - School
+  - Office_FedEx
+  - Startup_Sowl
+  - Store_A
+  - Store_B
+  - Market
+  - Park_Central
+  - Cafe
+  - Library
+  - Gym
+  - Village_Square
+
+- real purchasable home lots:
+  - Small Apartment lots
+  - Apartment units with floor assignments
+  - House lots
+  - Luxury House estates
+
+Each agent also has a human-facing home alias:
+
+- `Home_Alex`
+- `Home_Jamie`
+- etc.
+
+These aliases resolve to the agent’s **currently assigned physical home lot**.
+
+So buying a new home changes where `move_to(home)` actually goes.
 
 ---
+
+## Open hours and access rules
+
+Many places enforce open/closed hours.
+
+Additionally:
+
+- `work_job` requires being near the correct workplace
+- `get_education` requires being near School or Library
+- `seek_medicalcare` requires being near Hospital
+- `change_status` requires being near the target person
+
+If a requested work or study duration would extend past closing time, the action fails with feedback telling the agent to choose a shorter duration.
+
+### Current workplace mapping
+
+- Alex / developer / tech / startup / founder -> `Startup_Sowl`
+- Jamie / nurse / doctor -> `Hospital`
+- Jordan / delivery / driver / fedex -> `Office_FedEx`
+- Mia / teacher / tutor -> `School`
+- Ethan / founder / startup -> `Startup_Sowl`
+
 ---
 
-## Architectural Additions
-1. **Interactive State Machine (Exams & Jobs):** Agents engaging in high-yield activities must pass through a 3-step conversational flow. They must pick up job-specific props (e.g., Laptops, Stethoscopes) and answer MCQ challenges to receive payouts.
-2. **Rolling Memory (Subprocess Summarization):** A background `llama-cli` instance intercepts agent Context Windows using Few-Shot prompting, compressing their history iteratively to preserve 131k token length without losing long-term plot progression. Protects Turn 1 System Rules permanently. The prompt is highly configurable via `config.py`.
-3. **3D Hitboxes and Vision Nav-Mesh:** The map is no longer abstract. Buildings possess explicit `x,y,z` boundaries filled with 60+ real-world environmental props. Agents traverse the Z-axis using elevators and staircases using proximity-based vision queues.
-4. **Finite Macro-Economy:** The village stores operate on strict, finite inventories. Food and items run out and restock on a 7-day loop, forcing long-term survival planning.
-5. **Harsh Biologics & Weather:** Introduced exponential starvation damage, debt-stress multipliers, and real-time weather notifications that force agents to interact dynamically with the environment.
-6. **Strict Event Blocking (Do Not Disturb):** Agents who are sleeping or actively working exist in an uninterruptible event block, preventing logical ghosting and enforcing realistic temporal permanence. 
+## Purchasing model
+
+Item buying is intentionally **abstract village-wide purchasing**, not store-location gated.
+
+That means:
+
+- `buy_item` does **not** require being physically inside a store
+- `eat_food` may buy food directly from village stock if not already held/in inventory
+
+However, purchases still obey:
+
+- village stock limits
+- affordability
+- inventory capacity
+- item existence
+
+All spending updates both:
+
+- `expenses` (rolling recent spending memory)
+- `total_expenses` (lifetime accumulated spending)
+
+Taxes are also counted as expenses.
 
 ---
+
+## Core agent state
+
+Each agent maintains explicit state such as:
+
+- `health`
+- `energy`
+- `hunger`
+- `stress`
+- `happiness`
+- `education`
+- `relationships`
+- `relationships_status`
+- `relationship_partner`
+- `money`
+- `expenses`
+- `total_expenses`
+- `hourly_wage`
+- `shares_owned`
+- `inventory`
+- `currently_holding`
+- `beliefs`
+- `home_location`
+- `current_home_type`
+- `task_state`
+- `current_activity`
+- `is_sleeping`
+
+---
+
+## Main formulas
+
+### Happiness
+
+Happiness is updated passively using health, relationship strength, and financial comfort:
+
+```text
+rel_scaled = min(100, (relationships / 5) * 100)
+
+happiness_target =
+    0.3 * health
+  + 0.3 * rel_scaled
+  + 0.4 * 100 * tanh(money / (expenses + eps))
+
+happiness_next = clamp(0, 100, 0.7 * happiness + 0.3 * happiness_target)
+```
+
+### Stress
+
+Stress uses relationship tension, financial pressure, and market anxiety:
+
+```text
+loneliness = max(0, 3 - relationships)^2
+crowding   = max(0, relationships - 10) * 2
+rel_tension = loneliness + crowding
+
+fin_pressure = 2 * (expenses / (max(0, money) + 1))
+
+market_anxiety depends on:
+- owned shares
+- recent negative price movement
+- current position value
+
+stress_target =
+    (rel_tension + fin_pressure + market_anxiety)
+    / (1 + 0.01 * happiness + 0.001 * hourly_wage)
+
+stress_next = clamp(0, 100, 0.7 * stress + 0.3 * stress_target * debt_penalty)
+```
+
+### Health
+
+Health changes passively as a function of stress, hunger, energy pressure, happiness, and age:
+
+```text
+delta_health =
+    (-(0.5 * stress + 0.3 * hunger + energy_penalty * 10) + 0.1 * happiness)
+    * exp(0.02 * age)
+    * 0.02
+```
+
+If hunger reaches 100, starvation damage escalates over time.
+
+---
+
+## Sleep and availability
+
+Sleep is explicit.
+
+Sleeping agents:
+
+- recover energy
+- reduce stress
+- are marked as Do Not Disturb
+- cannot be talked to, called successfully, attacked, or made to overhear conversations
+- do not gain `awake_hours` while sleeping
+- do not suffer the normal passive energy drain while sleeping
+
+Sleeping outside home is weaker than sleeping at home:
+
+- outside sleep recovery is capped
+- but it will not reduce already-high energy
+
+---
+
+## Relationships
+
+The social model is intentionally lightweight.
+
+- `relationships` is a scalar used by the happiness/stress formulas
+- social actions slightly improve it
+- hostile actions can reduce it
+- `relationships_status` stores labels like `single` or `dating`
+- `relationship_partner` stores who that status refers to
+
+This is simpler than a full per-person sentiment graph, but more meaningful than a single global status string alone.
+
+---
+
+## Work and education system
+
+`work_job` and `get_education` are interactive multi-step tasks.
+
+### Flow
+
+1. start the task
+2. use `pick_item` to grab the required scenario prop
+3. use `interact_with` to answer the scenario
+
+### Task rules
+
+- agents cannot perform unrelated actions mid-task
+- failed mid-task steps still consume time
+- after 3 failed attempts, the task is cancelled
+- temporary task props do not destroy real held items
+- if hands are full and inventory is full, the agent is told to drop something
+
+### Education
+
+`get_education`:
+
+- checks proximity to School or Library
+- checks institution open hours
+- checks that requested duration fits before closing
+- charges tuition before the study task begins
+- raises education and wage on completion
+
+Supported tuition tiers:
+
+- default education: $2000
+- master's: $4000
+- PhD / doctorate: $8000
+
+---
+
+## Inventory, holding, and ground items
+
+Agents have:
+
+- a limited inventory
+- one currently held item
+
+### `pick_item`
+
+Can pick up from:
+
+- inventory
+- nearby dropped ground items
+- nearby corpse loot
+
+### `drop_item`
+
+Drops a held or named inventory item onto the ground.
+
+Rules:
+
+- the dropper cannot re-pick the same dropped item for 1 hour
+- another agent may pick it up earlier
+- if someone else picks it up, the original dropper is notified
+
+---
+
+## Hobby system
+
+Agents can use `do_hobby` with valid hobby items such as:
+
+- `Book`
+- `Art Supplies`
+- `Notebook`
+
+This reduces stress and increases happiness.
+
+It works with both:
+
+- held items
+- items in inventory
+
+Invalid items are rejected.
+
+---
+
+## Food and item realism
+
+`eat_food` only works on actual food items.
+
+Agents cannot eat arbitrary non-food items.
+
+Food can be:
+
+- consumed from hand
+- consumed from inventory
+- bought directly from village stock if available
+
+Spoilage is modeled for old stored food.
+
+---
+
+## Movement and interaction rules
+
+### `move_to`
+
+- uses distance-based travel time
+- drains energy based on distance
+- respects open hours
+- respects locked-home access rules
+
+### `walk`
+
+- moves 30m in the requested direction
+- respects open hours when stepping into buildings
+- prevents invalid “walk off the building” transitions from elevated positions
+
+### `interact_with`
+
+- supports person or object interaction
+- object interaction requires:
+  - same location
+  - same floor / Z level tolerance
+- nonexistent objects fail instead of silently succeeding
+
+---
+
+## Person-to-person interaction distances
+
+Current hard limits:
+
+| Tool | Distance |
+|------|----------|
+| `talk_to` | 50m |
+| `interact_with` (person) | 20m |
+| `attack_person` | 20m |
+| `change_status` | 30m |
+| `give_item` | 20m |
+| `give_money` | 20m |
+| `work_job` workplace proximity | 150m |
+| `get_education` proximity | 150m |
+| `seek_medicalcare` proximity | 150m |
+
+---
+
+## Market system
+
+The stock market is only open on:
+
+- **Monday-Friday**
+- **09:30-16:00**
+
+### Price model
+
+While the market is open, price updates use:
+
+- geometric Brownian motion
+- trade-flow impact based on net volume that period
+
+### Orders
+
+- buys/sells placed while closed are queued
+- queued orders execute during market-open processing
+- cost basis is updated correctly on queued buys
+- `last_known_price` resets correctly when a position is fully sold
+
+### Death and shares
+
+If an agent dies while holding shares:
+
+- their shares are liquidated at the current market price
+- proceeds are added to the estate/corpse loot
+
+---
+
+## Death, corpse loot, and estate behavior
+
+When an agent dies:
+
+- they stop acting
+- they stop paying tax
+- they stop processing market orders
+- their held non-task item is preserved into their estate
+- their stock position is liquidated into cash
+- their cache file is no longer needed
+- a corpse/estate record is left at the death location
+
+### Loot behavior
+
+Corpse loot persists until collected.
+
+A living agent who comes within **300m** automatically scavenges:
+
+- as many items as inventory capacity allows
+- all available estate cash
+
+Agents can also manually pick up corpse items at close range using `pick_item`.
+
+---
+
+## Housing system
+
+Housing is both economic **and** spatial.
+
+### Home tiers
+
+- Small Apartment
+- Apartment
+- House
+- Luxury House
+
+### Purchase behavior
+
+Buying a home:
+
+- sells the current home at 70% of catalog value
+- assigns a new vacant lot of the requested type
+- changes the physical location of the agent’s home alias
+- blocks re-buying the same home type
+- fails if no vacant lot of that type exists
+
+Apartment homes are real assigned units/floors, not just abstract labels.
+
+---
+
+## Rolling memory and context management
+
+The system includes rolling summarization to control prompt growth.
+
+### Policy
+
+Before generating the **31st assistant response** for an agent:
+
+- the oldest 20 completed action cycles are compressed
+- the newest 10 cycles remain verbatim
+- one evolving rolling summary is kept
+- that summary is inserted into the **first system prompt**, not as a mid-history system message
+
+If summarization fails, the simulation continues safely using fallback behavior.
+
+A final context guard also stops the simulation if prompt growth becomes too large even after summarization.
+
+---
+
+## Logging
+
+The simulation logs both inputs and outputs.
+
+Per turn, logging includes:
+
+- wall-clock timestamp
+- simulation time
+- notifications shown to the agent
+- prompt/messages sent to the model
+- raw model output
+- parsed tool name and arguments
+- tool result
+- success/failure
+- time cost
+- pre-state snapshot
+- post-state snapshot
+
+Files are written under `logs/`, and logs/cache are cleaned at startup.
+
+---
+
+## Available tools
+
+| Tool | Purpose |
+|------|---------|
+| `talk_to` | In-person conversation |
+| `call_person` | Phone call |
+| `interact_with` | Person/object interaction or task answer |
+| `change_status` | Update beliefs/goals or relationship status |
+| `attack_person` | Physical aggression |
+| `move_to` | Travel to a named place |
+| `walk` | Move locally by direction |
+| `sleep` | Recover energy and become unavailable |
+| `buy_item` | Buy item or home |
+| `eat_food` | Eat held/inventory/stock food |
+| `do_hobby` | Reduce stress using hobby items |
+| `pick_item` | Hold an item or pick up nearby ground/corpse loot |
+| `drop_item` | Drop a held or inventory item |
+| `give_item` | Give an item to a nearby person |
+| `give_money` | Give money to a nearby person |
+| `work_job` | Begin interactive work task |
+| `get_education` | Begin interactive study task |
+| `seek_medicalcare` | Restore health near Hospital |
+| `buy_stock` | Buy shares |
+| `sell_stock` | Sell shares |
+
+---
+
+## Default starting agents
+
+| Name | Role | Age | Wage | Starting Cash | Starting Home Type |
+|------|------|-----|------|---------------|--------------------|
+| Alex | Developer at Sowl | 28 | $50 | $5000 | Small Apartment |
+| Jamie | Nurse | 35 | $60 | $6000 | Apartment |
+| Taylor | Student | 21 | $20 | $20 | Small Apartment |
+| Jordan | Delivery Driver | 39 | $20 | $2000 | Apartment |
+| Mia | Teacher | 41 | $35 | $3500 | House |
+| Ethan | Founder | 30 | $100 | $10000 | Luxury House |
+
+Each is assigned a real physical home lot at startup.
+
+---
+
+## Notes for prompt and persona authors
+
+Persona files live in `prompts/` and are loaded by lowercase agent filename, e.g.:
+
+- `alex.txt`
+- `jamie.txt`
+- `mia.txt`
+
+The common prompt is loaded from:
+
+- `prompts/common_prompt.txt`
+
+If you edit prompting behavior, keep the XML tool-call format consistent across:
+
+- `common_prompt.txt`
+- `tools.json`
+- any future docs or examples
+
+---
+
+## Current design tradeoffs
+
+A few things are intentionally simplified:
+
+- purchasing is abstract rather than store-location-gated
+- relationship modeling is scalar, not a full per-person social graph
+- work/study scenarios use lightweight MCQ-style tasks
+- market realism is partial, not institution-grade finance simulation
+
+This is deliberate. The system prioritizes **consistent simulation constraints** and **inspectable behavior** over maximal realism in every subsystem.
+
+---
+
+## License
+
+See `LICENSE`.
