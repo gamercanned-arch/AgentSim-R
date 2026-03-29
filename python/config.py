@@ -1,8 +1,12 @@
 import os
 
 N_AGENTS = 6
-MAX_NEW_TOKENS = 5000
-CONTEXT_SIZE = 131072
+
+# With your stated server support, set to 262144.
+CONTEXT_SIZE = 262144
+
+# Keep generation bounded; tool calls should be short.
+MAX_NEW_TOKENS = 2048
 
 PASSIVE_TICK_SECONDS = 3600.0
 RANDOM_SEED = 42
@@ -16,6 +20,7 @@ TOOLS_PATH = os.path.join(BASE_DIR, "tools.json")
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(CACHE_DIR, exist_ok=True)
 
+# Market model
 STOCK_MU = 0.0005
 STOCK_SIGMA = 0.015
 IMPACT_FACTOR = 0.00005
@@ -26,20 +31,27 @@ SIM_HOURS_PER_YEAR = 8760
 
 MAX_RUNTIME_MINUTES = float(os.environ.get("MAX_RUNTIME_MINUTES", 600.0))
 
+# Inventory + economy
 MAX_INVENTORY = 20
 TAX_AMOUNT = 50.0
+TAX_EXEMPT_BELOW_CASH = 200.0  # scheduler currently uses 200.0 directly; keep for clarity.
+
+# Llama server + optional summarizer settings (summarization is disabled in utils.py now)
 LLAMA_CLI_PATH = os.environ.get("LLAMA_CLI_PATH", "llama-cli")
 SUMMARIZER_MODEL_PATH = os.environ.get("SUMMARIZER_MODEL_PATH", "models/qwen3.5-0.8b.gguf")
 
+# Market hours
 MARKET_OPEN_HOUR = 9
 MARKET_OPEN_MINUTE = 30
 MARKET_CLOSE_HOUR = 16
 MARKET_CLOSE_MINUTE = 0
 
+# OpenAI-ish summarizer settings (unused now; kept to avoid breaking old imports)
 SUMMARY_TRIGGER_CYCLES = 30
 SUMMARY_COMPRESS_CYCLES = 20
 SUMMARY_KEEP_CYCLES = 10
 
+# Spatial constraints
 WORKPLACE_MAX_DISTANCE = 150.0
 STATUS_MAX_DISTANCE = 30.0
 GROUND_PICKUP_RADIUS = 20.0
@@ -47,6 +59,7 @@ AUTO_LOOT_RADIUS = 300.0
 OBJECT_Z_TOLERANCE = 1.0
 DROP_REPICKUP_COOLDOWN = 3600.0
 
+# Village stock (unchanged, but note: food now affects hydration too via tools.py)
 BASE_STORE_INVENTORY = {
     "Snacks": 35 * N_AGENTS,
     "Water": 35 * N_AGENTS,

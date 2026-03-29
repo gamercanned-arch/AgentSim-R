@@ -428,3 +428,15 @@ def humanize_location_name(name: str) -> str:
 
 def get_location_label(name: str) -> str:
     return humanize_location_name(name)
+
+
+def get_location_entrance_point(loc: LocationDef) -> tuple:
+    """Get the entrance point inside the location (center at z_min)."""
+    return get_location_center(loc)
+
+
+def get_location_outside_entrance_point(loc: LocationDef, offset_m: float = 20.0) -> tuple:
+    """Get the outside entrance point, offset from the center towards the outside."""
+    cx, cy, cz = get_location_center(loc)
+    # Simple offset towards negative y (assuming front entrance)
+    return (cx, cy - offset_m, cz)

@@ -6,7 +6,7 @@ import time
 import numpy as np
 
 from config import BASE_STORE_INVENTORY, CACHE_DIR, LOG_DIR, MAX_RUNTIME_MINUTES, N_AGENTS, RANDOM_SEED
-from locations import describe_home_location, get_location_by_name
+from locations import describe_home_location, get_location_by_name, get_location_outside_entrance_point
 from logger import log_global
 from scheduler import run_tick
 from state import AgentState, WorldState
@@ -112,6 +112,13 @@ def main():
             agent.y = (loc_def.y_min + loc_def.y_max) / 2.0
             agent.z = loc_def.z_min
 
+        # Vehicle defaults to Scooter. Park it outside the home entrance (outside-door norm).
+        if loc_def:
+            outside = get_location_outside_entrance_point(loc_def, offset_m=15.0)
+            agent.vehicle_x, agent.vehicle_y, agent.vehicle_z = outside
+        else:
+            agent.vehicle_x, agent.vehicle_y, agent.vehicle_z = agent.x, agent.y, agent.z
+
         agent.busy_until = random.uniform(world.sim_time, world.sim_time + 60.0)
         agent.current_activity = "idle"
 
@@ -120,7 +127,7 @@ def main():
         print(
             f"Initialized {agent.name:>6s} | Job: {agent.job:<15s} | "
             f"Home: Home_{agent.name} ({describe_home_location(home_location)}) | "
-            f"Cash: ${agent.money:.2f}"
+            f"Cash: ${agent.money:.2f} | Vehicle: {agent.vehicle_type}"
         )
 
     print(f"\nAgentSim-R starting...\nTime limit: {MAX_RUNTIME_MINUTES}m")

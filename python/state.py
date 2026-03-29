@@ -13,6 +13,7 @@ class AgentState:
 
     health: float = 100.0
     energy: float = 100.0
+    hydration: float = 70.0  # NEW
     happiness: float = 50.0
     stress: float = 20.0
     hunger: float = 30.0
@@ -37,6 +38,7 @@ class AgentState:
     z: float = 0.0
 
     starvation_hours: int = 0
+    dehydration_hours: int = 0  # NEW
     awake_hours: int = 0
     hours_lived: int = 0
     caffeine_level: int = 0
@@ -63,8 +65,17 @@ class AgentState:
     task_state: str = "idle"
     pending_task_data: Dict[str, Any] = field(default_factory=dict)
 
-    rolling_summary: str = ""
-    is_summarizing: bool = False
+    # NEW: surfaced task entities (prompt can show these later)
+    active_task_entities: Dict[str, Any] = field(default_factory=dict)
+
+    # NEW: scenario recency buffer by pool key
+    recent_scenarios: Dict[str, List[str]] = field(default_factory=dict)
+
+    # Vehicle asset (not inventory)
+    vehicle_type: str = "Scooter"
+    vehicle_x: float = 0.0
+    vehicle_y: float = 0.0
+    vehicle_z: float = 0.0
 
     first_turn: bool = True
     social_cooldowns: Dict[str, float] = field(default_factory=dict)
