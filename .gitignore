@@ -1,10 +1,9 @@
 logs/
-python/__pycache__/
 .venv/
 .env
-llama.cpp
 models/
-logs_1/
-logs_2/
 cache
 *pycache*/
+dir.py
+codebase.txt
+extract_t1.py

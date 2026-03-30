@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import random
-from typing import Tuple
 
 from config import MAX_INVENTORY, STATUS_MAX_DISTANCE
 from tooling.death import kill_agent
@@ -10,6 +9,7 @@ from tooling.helpers import (
     canonicalize_item_name,
     find_agent_by_name,
     is_busy,
+    normalize_label,
 )
 
 
@@ -47,7 +47,6 @@ def handle_talk_to(agent, world, args: dict):
     agent.social_fulfillment = min(100.0, agent.social_fulfillment + 10.0)
     target.pending_notifications.append(f"{agent.name} said: {msg}")
 
-    # Eavesdropping: same-floor reach check from speaker to other
     for other in world.agents.values():
         if not other.alive or other.id in (agent.id, target.id):
             continue
@@ -56,9 +55,9 @@ def handle_talk_to(agent, world, args: dict):
 
         ok2, _ = can_physically_reach_person(agent, other, 50.0)
         if ok2:
-            other.pending_notifications.append(f"Overheard {agent.name} say to {t_name}: '{msg}'")
+            other.pending_notifications.append(f"Overheard {agent.name} say to {target.name}: '{msg}'")
 
-    return f"Talked to {t_name}.", True, 60
+    return f"Talked to {target.name}.", True, 60
 
 
 def handle_call_person(agent, world, args: dict):
@@ -76,7 +75,7 @@ def handle_call_person(agent, world, args: dict):
 
     _social_bump(agent, target, 0.1)
     target.pending_notifications.append(f"Phone Call from {agent.name}: {msg}")
-    return f"Called {t_name}.", True, 60
+    return f"Called {target.name}.", True, 60
 
 
 def handle_give_item(agent, world, args: dict):
@@ -102,11 +101,11 @@ def handle_give_item(agent, world, args: dict):
         return f"{target.name}'s inventory is full.", False, 60
 
     item_data = None
-    if agent.currently_holding and agent.currently_holding["item"].lower() == item_name.lower():
+    if agent.currently_holding and normalize_label(agent.currently_holding["item"]) == normalize_label(item_name):
         item_data = agent.currently_holding
         agent.currently_holding = None
     else:
-        idx = next((i for i, it in enumerate(agent.inventory) if it["item"].lower() == item_name.lower()), -1)
+        idx = next((i for i, it in enumerate(agent.inventory) if normalize_label(it["item"]) == normalize_label(item_name)), -1)
         if idx != -1:
             item_data = agent.inventory.pop(idx)
 
@@ -117,8 +116,8 @@ def handle_give_item(agent, world, args: dict):
     target.inventory.append(item_data)
     _social_bump(agent, target, 0.25)
     agent.social_fulfillment = min(100.0, agent.social_fulfillment + 15.0)
-    target.pending_notifications.append(f"{agent.name} gave you {item_name}.")
-    return f"Gave {item_name} to {t_name}.", True, 60
+    target.pending_notifications.append(f"{agent.name} gave you {item_data['item']}.")
+    return f"Gave {item_data['item']} to {target.name}.", True, 60
 
 
 def handle_give_money(agent, world, args: dict):
@@ -155,20 +154,18 @@ def handle_give_money(agent, world, args: dict):
     _social_bump(agent, target, 0.2)
     agent.social_fulfillment = min(100.0, agent.social_fulfillment + 15.0)
     target.pending_notifications.append(f"{agent.name} gave you ${amount:.2f}.")
-    return f"Gave ${amount:.2f} to {t_name}.", True, 60
+    return f"Gave ${amount:.2f} to {target.name}.", True, 60
 
 
 def handle_change_status(agent, world, args: dict):
     value = str(args.get("value", "")).strip()
     person = str(args.get("person", "")).strip()
-    rel_type = str(args.get("type", "")).strip().lower()
+    rel_type = normalize_label(str(args.get("type", "")).strip())
 
-    # Beliefs/goals update
     if value:
         agent.beliefs = value
         return f'Belief/Goal updated to: "{value}".', True, 30
 
-    # Relationship status change request/accept
     if person and rel_type:
         target = find_agent_by_name(world, person)
         if not target or not target.alive:
@@ -184,9 +181,8 @@ def handle_change_status(agent, world, args: dict):
             agent.failed_calls += 1
             return f"You must be within {STATUS_MAX_DISTANCE:.0f}m on the same floor to change relationship status.", False, 60
 
-        req_key = person.lower()
+        req_key = normalize_label(person)
         if agent.pending_status_requests.get(req_key) == rel_type:
-            # accept
             if rel_type == "single":
                 agent.relationship_partner = ""
                 target.relationship_partner = ""
@@ -199,12 +195,11 @@ def handle_change_status(agent, world, args: dict):
             del agent.pending_status_requests[req_key]
             _social_bump(agent, target, 0.4)
             target.pending_notifications.append(f"{agent.name} accepted status: {rel_type}.")
-            return f"Status with {person} changed to: {rel_type}.", True, 30
+            return f"Status with {target.name} changed to: {rel_type}.", True, 30
 
-        # request
-        target.pending_status_requests[agent.name.lower()] = rel_type
+        target.pending_status_requests[normalize_label(agent.name)] = rel_type
         target.pending_notifications.append(f"{agent.name} wants status: {rel_type}.")
-        return f"Requested status change to '{rel_type}' with {person}.", True, 30
+        return f"Requested status change to '{rel_type}' with {target.name}.", True, 30
 
     agent.failed_calls += 1
     return "Invalid parameters.", False, 60
@@ -234,6 +229,6 @@ def handle_attack_person(agent, world, args: dict):
 
     if target.health <= 0.0:
         kill_agent(target, world, cause=f"killed by {agent.name}")
-        return f"Killed {t_name}.", True, 60
+        return f"Killed {target.name}.", True, 60
 
-    return f"Attacked {t_name} for {damage:.1f} damage.", True, 60
+    return f"Attacked {target.name} for {damage:.1f} damage.", True, 60

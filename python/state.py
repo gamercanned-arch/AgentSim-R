@@ -13,7 +13,7 @@ class AgentState:
 
     health: float = 100.0
     energy: float = 100.0
-    hydration: float = 70.0  # NEW
+    hydration: float = 70.0
     happiness: float = 50.0
     stress: float = 20.0
     hunger: float = 30.0
@@ -38,7 +38,7 @@ class AgentState:
     z: float = 0.0
 
     starvation_hours: int = 0
-    dehydration_hours: int = 0  # NEW
+    dehydration_hours: int = 0
     awake_hours: int = 0
     hours_lived: int = 0
     caffeine_level: int = 0
@@ -65,13 +65,9 @@ class AgentState:
     task_state: str = "idle"
     pending_task_data: Dict[str, Any] = field(default_factory=dict)
 
-    # NEW: surfaced task entities (prompt can show these later)
     active_task_entities: Dict[str, Any] = field(default_factory=dict)
-
-    # NEW: scenario recency buffer by pool key
     recent_scenarios: Dict[str, List[str]] = field(default_factory=dict)
 
-    # Vehicle asset (not inventory)
     vehicle_type: str = "Scooter"
     vehicle_x: float = 0.0
     vehicle_y: float = 0.0
@@ -102,10 +98,21 @@ class WorldState:
         self.ground_items: List[Dict[str, Any]] = []
         self.corpse_estates: List[Dict[str, Any]] = []
 
-    def allocate_home_lot(self, home_type: str) -> Optional[str]:
+    def allocate_home_lot(self, home_type: str, prefer_floor1: bool = False) -> Optional[str]:
         available = self.vacant_home_lots.get(home_type, [])
         if not available:
             return None
+
+        if prefer_floor1:
+            floor1_candidates = [
+                name for name in available
+                if ("_Floor_1" in name) or ("_Floor_" not in name)
+            ]
+            if floor1_candidates:
+                choice = random.choice(floor1_candidates)
+                available.remove(choice)
+                return choice
+
         choice = random.choice(available)
         available.remove(choice)
         return choice

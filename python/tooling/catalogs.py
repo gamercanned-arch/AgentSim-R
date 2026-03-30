@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-# Central catalogs live here so tools/prompting/scheduler can import without circulars.
-
 ITEM_CATALOG = {
     "food": {
         "Snacks": {"price": 4, "hunger": 10, "hydration": 0, "time": 60, "caffeine": 0},
@@ -34,10 +32,6 @@ ITEM_CATALOG = {
 HOBBY_ITEMS = {"Book", "Art Supplies", "Notebook"}
 
 VEHICLE_CATALOG = {
-    # price: purchase price at Vehicle_Dealership; default Scooter is $0
-    # fuel_per_km: $ per km
-    # speed_mps: meters per second
-    # energy_per_km: small fatigue cost while riding
     "Scooter": {"price": 0.0, "speed_mps": 12.5, "fuel_per_km": 0.05, "energy_per_km": 0.05},
     "E-Bike": {"price": 600.0, "speed_mps": 9.0, "fuel_per_km": 0.01, "energy_per_km": 0.07},
     "Motorcycle": {"price": 3000.0, "speed_mps": 18.0, "fuel_per_km": 0.10, "energy_per_km": 0.06},
@@ -62,59 +56,66 @@ EDUCATION_LOCATIONS = ["School", "Library"]
 
 
 def generate_catalog_text() -> str:
-    """Generate a human-readable catalog of all items that agents can reference."""
     lines = []
     lines.append("[Catalog - Valid Values for Tools]")
     lines.append("")
 
-    # Locations
-    lines.append("## Locations (place for move_to)")
+    lines.append("## Locations for move_to")
     public_locations = [
         "Hospital", "School", "Office_FedEx", "Startup_Sowl",
         "Store_A", "Store_B", "Market", "Park_Central",
-        "Cafe", "Library", "Gym", "Village_Square"
+        "Cafe", "Library", "Gym", "Village_Square",
+        "Farm", "Mall", "Lake", "Vehicle_Dealership",
     ]
-    lines.append("- Public: " + ", " .join(public_locations))
-    lines.append("- Homes: Home_<Name> (e.g., Home_Alex, Home_Taylor, etc.)")
+    lines.append("- Public: " + ", ".join(public_locations))
+    lines.append("- Homes: Home_<Name> such as Home_Alex or Home_Taylor")
+    lines.append("- Use named places only. Coordinates are never valid move_to inputs.")
     lines.append("")
 
-    # Items
-    lines.append("## Buyable Items (item for buy_item)")
-    for category, items in ITEM_CATALOG.items():
-        lines.append(f"- {category.title()}:")
-        for name, data in items.items():
-            if isinstance(data, dict):
-                price = data.get("price", "?")
-            else:
-                price = data
-            lines.append(f"  - {name}: ${price}")
+    lines.append("## Buyable Food")
+    lines.append("- Food can be bought abstractly from village stock from anywhere if in stock and affordable.")
+    for name, data in ITEM_CATALOG["food"].items():
+        lines.append(
+            f"- {name}: ${data['price']} | Hunger -{data['hunger']} | Hydration +{data.get('hydration', 0)} | Time {int(data.get('time', 60))}s"
+        )
     lines.append("")
 
-    # Vehicles
+    lines.append("## Buyable Non-Food Items")
+    lines.append("- Everyday and health items must be bought while inside Store_A or Store_B.")
+    lines.append("- Everyday:")
+    for name, price in ITEM_CATALOG["everyday"].items():
+        lines.append(f"  - {name}: ${price}")
+    lines.append("- Health:")
+    for name, price in ITEM_CATALOG["health"].items():
+        lines.append(f"  - {name}: ${price}")
+    lines.append("")
+
+    lines.append("## Homes")
+    for name, price in ITEM_CATALOG["housing"].items():
+        lines.append(f"- {name}: ${price}")
+    lines.append("")
+
     lines.append("## Vehicles")
+    lines.append("- Vehicles must be bought while inside Vehicle_Dealership.")
     for name, data in VEHICLE_CATALOG.items():
-        price = data.get("price", 0)
-        lines.append(f"- {name}: ${price:.0f}")
+        lines.append(
+            f"- {name}: ${data['price']:.0f} | Speed {data['speed_mps']:.1f} m/s | Fuel ${data['fuel_per_km']:.2f}/km"
+        )
     lines.append("")
 
-    # Jobs
-    lines.append("## Jobs (jobname for work_job)")
+    lines.append("## Jobs for work_job")
     workplace_to_jobs: dict = {}
     for job, workplace in WORKPLACE_BY_JOB.items():
-        if workplace not in workplace_to_jobs:
-            workplace_to_jobs[workplace] = []
-        workplace_to_jobs[workplace].append(job)
+        workplace_to_jobs.setdefault(workplace, []).append(job)
     for workplace, jobs in workplace_to_jobs.items():
         lines.append(f"- {workplace}: " + ", ".join(jobs))
     lines.append("")
 
-    # Hobby items
-    lines.append("## Hobby Items (item for do_hobby)")
+    lines.append("## Hobby Items")
     lines.append("- " + ", ".join(sorted(HOBBY_ITEMS)))
     lines.append("")
 
-    # Education
-    lines.append("## Education Locations (location for get_education)")
+    lines.append("## Education Locations")
     lines.append("- " + ", ".join(EDUCATION_LOCATIONS))
 
     return "\n".join(lines)

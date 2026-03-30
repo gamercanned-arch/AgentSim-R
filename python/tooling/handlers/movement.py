@@ -18,11 +18,16 @@ from tooling.helpers import (
     canonicalize_place_name,
     check_open_hours,
     find_agent_by_name,
+    normalize_label,
     record_expense,
 )
 from tooling.navigation import shortest_route_distance_m
 
 VEHICLE_BOARD_MAX_DISTANCE = 100.0  # meters
+
+_COORD_RE = re.compile(
+    r"^\s*\(?\s*-?\d+(?:\.\d+)?\s*(?:,\s*|\s+)-?\d+(?:\.\d+)?(?:\s*(?:,\s*|\s+)-?\d+(?:\.\d+)?)?\s*\)?\s*$"
+)
 
 
 def _bearing_to_text(dx: float, dy: float) -> str:
@@ -43,26 +48,28 @@ def _bearing_to_text(dx: float, dy: float) -> str:
     return best[0]
 
 
+def _looks_like_coordinates(text: str) -> bool:
+    return bool(_COORD_RE.match(str(text or "").strip()))
+
+
 def _resolve_home_alias(place: str, world) -> Tuple[Optional[str], Optional[object]]:
-    if place.lower() in ("home", "house"):
+    norm = normalize_label(place)
+    if norm in ("home", "house"):
         return None, None
 
-    if place.lower().startswith("home_"):
-        owner_name = place.split("_", 1)[1]
+    if norm.startswith("home "):
+        owner_name = norm.split(" ", 1)[1].strip()
         owner = find_agent_by_name(world, owner_name)
         if owner:
             return owner.home_location, owner
     return None, None
 
 
-def _resolve_destination(place: str, agent, world):
-    raw_place = str(place or "").strip()
-    raw_place = re.sub(r"\s*\([^)]*\)\s*$", "", raw_place).strip()
+def _resolve_destination(place: str, raw_place: str, agent, world):
+    raw_norm = normalize_label(raw_place)
+    place_norm = normalize_label(place)
 
-    if not raw_place:
-        return None, None, "Unknown place."
-
-    if raw_place.lower() in ("home", "house"):
+    if raw_norm in ("home", "house"):
         target_loc = get_location_by_name(agent.home_location)
         return target_loc, agent, None
 
@@ -71,12 +78,20 @@ def _resolve_destination(place: str, agent, world):
         target_loc = get_location_by_name(alias_loc_name)
         return target_loc, home_owner, None
 
-    target_loc = get_location_by_name(raw_place)
+    target_loc = get_location_by_name(place)
     if target_loc:
         owner = next((a for a in world.agents.values() if a.home_location == target_loc.name), None)
+        if is_home_location(target_loc.name) and not raw_norm.startswith("home"):
+            return None, None, "Use a friendly home alias like Home_Taylor instead of an internal home location ID."
         return target_loc, owner, None
 
-    return None, None, f"Unknown place: '{raw_place}'."
+    if place_norm.startswith("home "):
+        alias_loc_name, home_owner = _resolve_home_alias(place, world)
+        if alias_loc_name:
+            target_loc = get_location_by_name(alias_loc_name)
+            return target_loc, home_owner, None
+
+    return None, None, f"Unknown place: '{raw_place}'. Use a named place like Library or Home_Taylor."
 
 
 def _distance_to_vehicle(agent) -> float:
@@ -87,8 +102,17 @@ def _distance_to_vehicle(agent) -> float:
 
 
 def handle_move_to(agent, world, args: dict):
-    place = canonicalize_place_name(str(args.get("place", ""))[:100], world)
-    target_loc, home_owner, err = _resolve_destination(place, agent, world)
+    raw_place = str(args.get("place", ""))[:100].strip()
+    if not raw_place:
+        agent.failed_calls += 1
+        return "No destination provided. Use a named place like Library or Home_Taylor.", False, 60
+
+    if _looks_like_coordinates(raw_place):
+        agent.failed_calls += 1
+        return "Coordinates are not valid move_to inputs. Use a named place like Library, Store_A, or Home_Taylor.", False, 60
+
+    place = canonicalize_place_name(raw_place, world)
+    target_loc, home_owner, err = _resolve_destination(place, raw_place, agent, world)
     if err:
         agent.failed_calls += 1
         return err, False, 60
@@ -101,7 +125,6 @@ def handle_move_to(agent, world, args: dict):
 
     dist_m = shortest_route_distance_m((agent.x, agent.y, agent.z), outside_xyz)
 
-    # Determine travel mode
     walk_speed_mps = 1.5
     walk_energy_per_m = 0.005
 
@@ -124,7 +147,6 @@ def handle_move_to(agent, world, args: dict):
         if agent.money >= fuel_cost:
             mode = "vehicle"
         else:
-            # walk fallback when broke for fuel
             speed = walk_speed_mps
             energy_per_m = walk_energy_per_m
             fuel_cost = 0.0

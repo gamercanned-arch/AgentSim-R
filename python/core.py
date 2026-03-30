@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 
 from config import (
     MARKET_CLOSE_HOUR,
@@ -10,12 +11,16 @@ from config import (
 )
 
 WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+SIM_START_DATE = date(2026, 3, 30)  # Monday
 
 
 @dataclass(frozen=True)
 class TimeParts:
     day_number: int
     weekday_idx: int
+    year: int
+    month: int
+    day: int
     hour: int
     minute: int
 
@@ -24,10 +29,19 @@ def get_time_parts(sim_time: float) -> TimeParts:
     total_minutes = int(sim_time // 60)
     total_days = total_minutes // 1440
     day_number = total_days + 1
-    weekday_idx = total_days % 7
+    current_date = SIM_START_DATE + timedelta(days=total_days)
+    weekday_idx = current_date.weekday()
     hour = (total_minutes // 60) % 24
     minute = total_minutes % 60
-    return TimeParts(day_number=day_number, weekday_idx=weekday_idx, hour=hour, minute=minute)
+    return TimeParts(
+        day_number=day_number,
+        weekday_idx=weekday_idx,
+        year=current_date.year,
+        month=current_date.month,
+        day=current_date.day,
+        hour=hour,
+        minute=minute,
+    )
 
 
 def get_clock(sim_time: float) -> str:
@@ -38,8 +52,8 @@ def get_clock(sim_time: float) -> str:
 def get_time_string(sim_time: float, include_weekday: bool = True) -> str:
     p = get_time_parts(sim_time)
     if include_weekday:
-        return f"Day {p.day_number} ({WEEKDAY_NAMES[p.weekday_idx]}), {p.hour:02d}:{p.minute:02d}"
-    return f"Day {p.day_number}, {p.hour:02d}:{p.minute:02d}"
+        return f"{WEEKDAY_NAMES[p.weekday_idx]}, {p.day:02d}-{p.month:02d}-{p.year:04d} {p.hour:02d}:{p.minute:02d}"
+    return f"{p.day:02d}-{p.month:02d}-{p.year:04d} {p.hour:02d}:{p.minute:02d}"
 
 
 def is_market_open(sim_time: float) -> bool:

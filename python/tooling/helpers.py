@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import os
 import re
-from typing import Any, Dict, Optional, Tuple
+from typing import Optional, Tuple
 
 from config import MAX_INVENTORY, OBJECT_Z_TOLERANCE, STATUS_MAX_DISTANCE, WORKPLACE_MAX_DISTANCE
 from locations import LOCATIONS_3D, get_current_location_def, get_distance_3d, get_location_by_name, is_home_location
@@ -18,18 +17,38 @@ _PREFIX_RE = re.compile(r"^(village_stock:|village stock:|store:|stock:)", flags
 _STORE_PREFIX_RE = re.compile(r"^store[_\s]+", flags=re.I)
 
 
-def normalize_label(text: str) -> str:
+def strip_wrapping_quotes(text: str) -> str:
     text = str(text or "").strip()
+    pairs = [
+        ("'", "'"),
+        ('"', '"'),
+        ("“", "”"),
+        ("‘", "’"),
+        ("`", "`"),
+    ]
+    changed = True
+    while changed and len(text) >= 2:
+        changed = False
+        for left, right in pairs:
+            if text.startswith(left) and text.endswith(right):
+                text = text[1:-1].strip()
+                changed = True
+    return text
+
+
+def normalize_label(text: str) -> str:
+    text = strip_wrapping_quotes(str(text or "").strip())
     text = text.replace("_", " ").replace("-", " ")
     text = re.sub(_WS_RE, " ", text)
-    return text.lower()
+    return text.lower().strip()
 
 
 def canonicalize_from_names(raw: str, names) -> Optional[str]:
-    cleaned = str(raw or "").strip()
+    cleaned = strip_wrapping_quotes(str(raw or "").strip())
     cleaned = re.sub(_PARENS_TAIL_RE, "", cleaned).strip()
     cleaned = re.sub(_PREFIX_RE, "", cleaned).strip()
     cleaned = re.sub(_STORE_PREFIX_RE, "", cleaned).strip()
+    cleaned = strip_wrapping_quotes(cleaned)
     normalized = normalize_label(cleaned)
 
     for name in names:
@@ -39,28 +58,31 @@ def canonicalize_from_names(raw: str, names) -> Optional[str]:
 
 
 def canonicalize_item_name(raw_name: str, categories=None) -> str:
+    raw_name = strip_wrapping_quotes(raw_name)
     categories = categories or ITEM_CATALOG.keys()
     names = []
     for category in categories:
         names.extend(ITEM_CATALOG[category].keys())
     names.extend(VEHICLE_CATALOG.keys())
-    return canonicalize_from_names(raw_name, names) or str(raw_name).strip()
+    return canonicalize_from_names(raw_name, names) or strip_wrapping_quotes(str(raw_name).strip())
 
 
 def canonicalize_food_name(raw_name: str) -> str:
-    return canonicalize_from_names(raw_name, ITEM_CATALOG["food"].keys()) or str(raw_name).strip()
+    raw_name = strip_wrapping_quotes(raw_name)
+    return canonicalize_from_names(raw_name, ITEM_CATALOG["food"].keys()) or strip_wrapping_quotes(str(raw_name).strip())
 
 
 def canonicalize_place_name(raw_place: str, world) -> str:
-    raw_place = str(raw_place or "").strip()
+    raw_place = strip_wrapping_quotes(str(raw_place or "").strip())
     if not raw_place:
         return raw_place
 
-    if normalize_label(raw_place) in ("home", "house"):
+    normalized = normalize_label(raw_place)
+    if normalized in ("home", "house"):
         return "home"
 
-    if normalize_label(raw_place).startswith("home "):
-        suffix = re.sub(r"^\s*home[_\s]+", "", raw_place, flags=re.I).strip()
+    if normalized.startswith("home "):
+        suffix = normalized[len("home "):].strip()
         owner = find_agent_by_name(world, suffix)
         if owner:
             return f"Home_{owner.name}"
@@ -69,11 +91,12 @@ def canonicalize_place_name(raw_place: str, world) -> str:
     if loc_match:
         return loc_match
 
-    return raw_place
+    return strip_wrapping_quotes(raw_place)
 
 
 def find_agent_by_name(world, name: str):
-    return next((a for a in world.agents.values() if a.name.lower() == str(name).lower()), None)
+    wanted = normalize_label(name)
+    return next((a for a in world.agents.values() if normalize_label(a.name) == wanted), None)
 
 
 # -------------------------
@@ -119,7 +142,6 @@ def seconds_until_close(loc, sim_time: float) -> float:
 # -------------------------
 
 def is_busy(target_agent, sim_time: float) -> bool:
-    # busy_until is authoritative
     if not target_agent.alive:
         return True
     if target_agent.is_sleeping:
@@ -155,8 +177,9 @@ def can_physically_reach_person(agent, target, max_distance: float) -> Tuple[boo
 # -------------------------
 
 def has_item_index(agent, item_name: str) -> int:
+    wanted = normalize_label(item_name)
     for i, it in enumerate(agent.inventory):
-        if it["item"].lower() == str(item_name).lower():
+        if normalize_label(it["item"]) == wanted:
             return i
     return -1
 
@@ -205,14 +228,14 @@ def validate_shares(raw) -> Tuple[int, Optional[str]]:
 # -------------------------
 
 def resolve_workplace_name(job_raw: str, agent) -> Optional[str]:
-    lowered = (job_raw or "").lower().strip()
+    lowered = normalize_label(job_raw)
     for key, loc_name in WORKPLACE_BY_JOB.items():
-        if key in lowered:
+        if normalize_label(key) in lowered:
             return loc_name
 
-    fallback = (agent.job or "").lower()
+    fallback = normalize_label(agent.job or "")
     for key, loc_name in WORKPLACE_BY_JOB.items():
-        if key in fallback:
+        if normalize_label(key) in fallback:
             return loc_name
 
     return None

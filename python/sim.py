@@ -72,7 +72,6 @@ def main():
     world = WorldState()
     world.store_inventory = dict(BASE_STORE_INVENTORY)
 
-    # Start at 08:00 Monday so agents begin in a more actionable part of the day.
     world.sim_time = 8 * 3600
     world.last_passive = world.sim_time
 
@@ -97,7 +96,7 @@ def main():
         agent.job = profile["job"]
 
         home_type = profile["home"]
-        home_location = world.allocate_home_lot(home_type)
+        home_location = world.allocate_home_lot(home_type, prefer_floor1=True)
         if not home_location:
             raise RuntimeError(f"No vacant home lots available for starting home type '{home_type}'.")
 
@@ -112,7 +111,6 @@ def main():
             agent.y = (loc_def.y_min + loc_def.y_max) / 2.0
             agent.z = loc_def.z_min
 
-        # Vehicle defaults to Scooter. Park it outside the home entrance (outside-door norm).
         if loc_def:
             outside = get_location_outside_entrance_point(loc_def, offset_m=15.0)
             agent.vehicle_x, agent.vehicle_y, agent.vehicle_z = outside

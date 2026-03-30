@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from typing import Tuple
 
 from core import is_market_open
 from config import MAX_INVENTORY
@@ -29,15 +28,21 @@ def _find_catalog_entry(item_name: str):
     return None, None
 
 
+def _current_store_if_inside(agent):
+    here = get_current_location_def(agent.x, agent.y, agent.z)
+    if here and here.name in {"Store_A", "Store_B"}:
+        return here
+    return None
+
+
 def handle_buy_item(agent, world, args: dict):
     item = canonicalize_item_name(str(args.get("item", "")).strip()[:100])
 
-    # Vehicle purchase: must be inside Vehicle_Dealership during open hours
     if item in VEHICLE_CATALOG:
         dealership = get_location_by_name("Vehicle_Dealership")
         if not dealership:
             agent.failed_calls += 1
-            return "Vehicle dealership not found.", False, 60
+            return "Vehicle_Dealership not found.", False, 60
 
         here = get_current_location_def(agent.x, agent.y, agent.z)
         if not here or here.name != "Vehicle_Dealership":
@@ -53,18 +58,19 @@ def handle_buy_item(agent, world, args: dict):
             agent.failed_calls += 1
             return f"Cannot afford {item} (${price:.2f}).", False, 60
 
+        if getattr(agent, "vehicle_type", "") == item:
+            agent.failed_calls += 1
+            return f"You already own a {item}.", False, 60
+
         agent.money -= price
         record_expense(agent, price)
 
         agent.vehicle_type = item
-
-        # Park outside dealership (outside-door norm)
         outside = get_location_outside_entrance_point(dealership, offset_m=15.0)
         agent.vehicle_x, agent.vehicle_y, agent.vehicle_z = outside
 
         return f"Bought vehicle: {item} for ${price:.2f}. It is parked outside the dealership.", True, 600
 
-    # Housing purchase (restore prior semantics: update home, release old lot, move agent to new home)
     if item in ITEM_CATALOG["housing"]:
         if item == agent.current_home_type:
             agent.failed_calls += 1
@@ -90,21 +96,17 @@ def handle_buy_item(agent, world, args: dict):
             agent.failed_calls += 1
             return f"No vacant {item} lots are currently available.", False, 60
 
-        # release old
         if old_home_type and old_home_location:
             world.release_home_lot(old_home_type, old_home_location)
 
-        # transact
         agent.money += sell_price
         agent.money -= price
         record_expense(agent, price)
 
-        # update ownership
         agent.current_home_type = item
         agent.home_location = new_home_location
         agent.owned_locations = [new_home_location]
 
-        # move agent to new home lot center (matches prior code behavior)
         new_loc_def = get_location_by_name(new_home_location)
         if new_loc_def:
             cx, cy, cz = get_location_center(new_loc_def)
@@ -120,7 +122,7 @@ def handle_buy_item(agent, world, args: dict):
         )
 
     category, entry = _find_catalog_entry(item)
-    if category is None or category == "housing":
+    if category is None:
         agent.failed_calls += 1
         valid = (
             list(ITEM_CATALOG["food"].keys())
@@ -130,6 +132,15 @@ def handle_buy_item(agent, world, args: dict):
             + list(VEHICLE_CATALOG.keys())
         )
         return f"Item '{item}' not found. Valid: {', '.join(valid)}.", False, 60
+
+    if category != "food":
+        store_loc = _current_store_if_inside(agent)
+        if not store_loc:
+            agent.failed_calls += 1
+            return "Non-food items can only be bought while inside Store_A or Store_B.", False, 60
+        if not check_open_hours(store_loc, world.sim_time):
+            agent.failed_calls += 1
+            return f"{store_loc.name} is currently closed.", False, 60
 
     if len(agent.inventory) >= MAX_INVENTORY:
         agent.failed_calls += 1
@@ -201,7 +212,7 @@ def handle_eat_food(agent, world, args: dict):
     agent.health = min(100.0, agent.health + 2.0)
     agent.energy = min(100.0, agent.energy + 5.0)
     return (
-        f"Ate {item}. Hunger -{f['hunger']}, Hydration +{f.get('hydration',0)}. Health +2, Energy +5.",
+        f"Ate {item}. Hunger -{f['hunger']}, Hydration +{f.get('hydration', 0)}. Health +2, Energy +5.",
         True,
         int(f.get("time", 60)),
     )

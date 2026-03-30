@@ -14,6 +14,7 @@ from config import (
     STOCK_MU,
     STOCK_SIGMA,
     TAX_AMOUNT,
+    TAX_EXEMPT_BELOW_CASH,
 )
 from logger import log_global, log_io, log_turn, snapshot_agent
 from tools import _kill_agent, execute_tool, parse_tool_call, try_auto_collect_loot
@@ -28,13 +29,11 @@ from utils import (
 
 
 def _ensure_agent_schema(agent) -> None:
-    # Hydration
     if not hasattr(agent, "hydration"):
         agent.hydration = 70.0
     if not hasattr(agent, "dehydration_hours"):
         agent.dehydration_hours = 0
 
-    # Vehicle asset
     if not hasattr(agent, "vehicle_type"):
         agent.vehicle_type = "Scooter"
     if not hasattr(agent, "vehicle_x"):
@@ -44,7 +43,6 @@ def _ensure_agent_schema(agent) -> None:
     if not hasattr(agent, "vehicle_z"):
         agent.vehicle_z = getattr(agent, "z", 0.0)
 
-    # Scenario/task bookkeeping
     if not hasattr(agent, "recent_scenarios") or agent.recent_scenarios is None:
         agent.recent_scenarios = {}
     if not hasattr(agent, "active_task_entities") or agent.active_task_entities is None:
@@ -56,7 +54,6 @@ def _sha16(text: str) -> str:
 
 
 def run_tick(world) -> bool:
-    # Pick next agent event in discrete-event style; apply passive ticks as time advances.
     while True:
         alive_agents = [a for a in world.agents.values() if a.alive]
         if not alive_agents:
@@ -68,7 +65,6 @@ def run_tick(world) -> bool:
         if agent.busy_until > world.sim_time:
             world.sim_time = agent.busy_until
 
-        # Passive hourly ticks
         while world.sim_time - world.last_passive >= PASSIVE_TICK_SECONDS:
             world.last_passive += PASSIVE_TICK_SECONDS
 
@@ -105,7 +101,6 @@ def run_tick(world) -> bool:
     notifications = "\n".join(agent.pending_notifications)
     msgs = build_messages(agent.id, world, notifications)
 
-    # Render prompt ONCE (optimization)
     prompt_text = render_prompt(msgs)
     prompt_hash = _sha16(prompt_text)
     prompt_chars = len(prompt_text)
@@ -113,7 +108,6 @@ def run_tick(world) -> bool:
     estimated_tokens = estimate_prompt_tokens(msgs, prompt_text=prompt_text)
     context_limit = int(CONTEXT_SIZE * CONTEXT_FILL_RATIO)
     if estimated_tokens + MAX_NEW_TOKENS >= context_limit:
-        # Remove last user message appended this tick to avoid chat_history drift
         if agent.chat_history and agent.chat_history[-1].get("role") == "user":
             agent.chat_history.pop()
 
@@ -137,7 +131,6 @@ def run_tick(world) -> bool:
 
     gen, prompt_tokens, gen_tokens = call_server(msgs, agent.id, prompt_text=prompt_text)
 
-    # logger may be old/new; be backwards compatible
     try:
         log_io(agent.name, world.sim_time, msgs, gen, prompt_hash=prompt_hash, prompt_chars=prompt_chars)
     except TypeError:
@@ -183,7 +176,6 @@ def run_tick(world) -> bool:
             prompt_chars=prompt_chars,
         )
     except TypeError:
-        # Back-compat with older logger signatures
         log_turn(
             agent=agent,
             sim_time=world.sim_time,
@@ -317,7 +309,7 @@ def _apply_midnight_taxes(world) -> None:
     for agent in world.agents.values():
         if not agent.alive:
             continue
-        if agent.money < 200.0:
+        if agent.money < TAX_EXEMPT_BELOW_CASH:
             continue
         agent.money -= TAX_AMOUNT
         agent.expenses += TAX_AMOUNT
@@ -335,7 +327,6 @@ def _apply_passive_updates(agent, world, current_time: float) -> None:
     if not agent.alive:
         return
 
-    # Local safety (even if schema guard missed somewhere)
     if not hasattr(agent, "hydration"):
         agent.hydration = 70.0
     if not hasattr(agent, "dehydration_hours"):
@@ -358,16 +349,13 @@ def _apply_passive_updates(agent, world, current_time: float) -> None:
     if not is_sleeping_now and agent.hunger >= 90.0:
         _attempt_emergency_consume(agent, world, mode="hunger")
 
-    # Hydration decay
     agent.hydration = max(0.0, agent.hydration - (1.5 if is_sleeping_now else 4.0))
     if not is_sleeping_now and agent.hydration <= 12.0:
         _attempt_emergency_consume(agent, world, mode="thirst")
 
-    # Hunger drift
     hunger_gain = 0.5 if is_sleeping_now else 5.0
     agent.hunger = min(100.0, agent.hunger + hunger_gain)
 
-    # Energy drift
     if not is_sleeping_now:
         agent.energy = max(0.0, agent.energy - 2.0)
 
@@ -402,7 +390,6 @@ def _apply_passive_updates(agent, world, current_time: float) -> None:
         1.0 + alpha * agent.happiness + beta * agent.hourly_wage
     )
 
-    # Dehydration increases stress pressure
     if agent.hydration < 30.0 and not is_sleeping_now:
         stress_target *= 1.1
     if agent.hydration < 15.0 and not is_sleeping_now:
@@ -425,14 +412,12 @@ def _apply_passive_updates(agent, world, current_time: float) -> None:
     )
     agent.health = max(0.0, min(100.0, agent.health + delta_h))
 
-    # Starvation damage
     if agent.hunger >= 100.0:
         agent.starvation_hours += 1
         agent.health -= min(32.0, 2 ** agent.starvation_hours)
     else:
         agent.starvation_hours = 0
 
-    # Dehydration damage
     if agent.hydration <= 0.0:
         agent.dehydration_hours += 1
         agent.health -= min(16.0, 1.5 ** agent.dehydration_hours)
@@ -450,7 +435,6 @@ def _attempt_emergency_consume(agent, world, mode: str = "hunger") -> None:
     if mode == "thirst":
         prefer = {"Water", "Coffee"}
 
-    # Held first
     if agent.currently_holding and agent.currently_holding.get("item") in ITEM_CATALOG["food"]:
         held = agent.currently_holding
         if not prefer or held["item"] in prefer:
@@ -461,7 +445,6 @@ def _attempt_emergency_consume(agent, world, mode: str = "hunger") -> None:
             agent.pending_notifications.append(f"Auto-consumed held {held['item']} due to critical {mode}.")
             return
 
-    # Inventory next
     idx = -1
     for i, item in enumerate(agent.inventory):
         if item["item"] in ITEM_CATALOG["food"]:
@@ -478,7 +461,6 @@ def _attempt_emergency_consume(agent, world, mode: str = "hunger") -> None:
         agent.pending_notifications.append(f"Auto-consumed {eaten['item']} due to critical {mode}.")
         return
 
-    # Emergency buy from stock
     available = [item for item in ITEM_CATALOG["food"] if world.store_inventory.get(item, 0) > 0]
     if prefer:
         available = [i for i in available if i in prefer]

@@ -16,8 +16,9 @@ from config import (
     PROMPTS_DIR,
     TOOLS_PATH,
 )
-from core import get_clock, is_market_open
+from core import get_time_string, is_market_open
 from locations import (
+    PUBLIC_LOCATIONS_3D,
     describe_home_location,
     get_current_location_def,
     get_distance_3d,
@@ -25,7 +26,7 @@ from locations import (
     humanize_location_name,
     is_home_location,
 )
-from tooling.catalogs import HOBBY_ITEMS, ITEM_CATALOG, generate_catalog_text
+from tooling.catalogs import ITEM_CATALOG, generate_catalog_text
 
 SERVER_URL = "http://127.0.0.1:8080"
 
@@ -56,6 +57,33 @@ def _load_text_file(*candidate_names: str) -> str:
     return ""
 
 
+def _format_hour(hour_float: float) -> str:
+    if float(hour_float) >= 24.0:
+        return "24:00"
+    total_minutes = int(round(float(hour_float) * 60))
+    hh = (total_minutes // 60) % 24
+    mm = total_minutes % 60
+    return f"{hh:02d}:{mm:02d}"
+
+
+def _is_all_day(loc) -> bool:
+    return (
+        float(loc.open_time) == float(loc.close_time)
+        or (float(loc.open_time) == 0.0 and float(loc.close_time) >= 24.0)
+    )
+
+
+def _static_open_hours_text() -> str:
+    lines = ["[Public Location Hours]"]
+    for loc in PUBLIC_LOCATIONS_3D:
+        if _is_all_day(loc):
+            hours = "00:00-24:00"
+        else:
+            hours = f"{_format_hour(loc.open_time)}-{_format_hour(loc.close_time)}"
+        lines.append(f"- {loc.name}: {hours}")
+    return "\n".join(lines)
+
+
 def _build_base_system_prompt(agent) -> str:
     common_prompt = _load_text_file("common_prompt.txt", "common_prompts.txt")
     persona_prompt = _load_text_file(f"{agent.name.lower()}.txt", f"{agent.name}.txt")
@@ -65,18 +93,24 @@ def _build_base_system_prompt(agent) -> str:
         "- You MUST output exactly one valid XML tool call each turn.\n"
         "- You MAY think in an optional <think>...</think> block before the tool call.\n"
         "- Do NOT output any text after </tool_call>.\n"
-        "- Consider: time, location, hunger, hydration, energy, money, open hours, proximity, DND/busy.\n"
-        "- move_to travels to OUTSIDE entrance area; to enter a building, walk into its boundary.\n"
+        "- Coordinates shown in observations are read-only telemetry. Never pass coordinates into any tool.\n"
+        "- For move_to, use only a named public location or a home alias like Home_Taylor. Never use raw coordinates or internal location IDs.\n"
+        "- Place, item, and person names are normalized loosely by the engine, so close variants like Startup Sowl or Office FedEx are acceptable.\n"
+        "- move_to travels to the OUTSIDE entrance area; to enter a building, walk into its boundary.\n"
         "- Vehicles: you can ride only if within 100m of your parked vehicle; fuel costs $/km when riding.\n"
         "- If you cannot afford fuel, you walk instead.\n"
-        "- Environmental objects are NOT inventory items unless in Held/Inv.\n"
-        "- Use exact names shown in your observation.\n"
+        "- pick_item is for nearby dropped ground items, or for the required task prop during an active work or study task.\n"
+        "- hold_item moves an inventory item into your hand, or stores your held item back into inventory when item_name is store or None.\n"
+        "- Required task props cannot be stored away until the task ends.\n"
+        "- Corpse estate loot is collected automatically when you get close enough.\n"
+        "- Environmental objects are NOT inventory items unless shown in Held or Inventory.\n"
+        "- Use exact location and item names when possible; do not invent new places.\n"
     )
 
-    # Generate the full catalog of valid values for tools
     catalog_text = generate_catalog_text()
+    hours_text = _static_open_hours_text()
 
-    sections = [s for s in (common_prompt, persona_prompt, dynamic_rules, catalog_text) if s]
+    sections = [s for s in (common_prompt, persona_prompt, dynamic_rules, hours_text, catalog_text) if s]
     return "\n\n".join(sections).strip()
 
 
@@ -168,7 +202,7 @@ def _nearest_entrances(agent, max_show: int = 3, max_dist: float = 120.0) -> str
     top = candidates[:max_show]
     if not top:
         return "None"
-    return "; ".join([f"{name} door {d:.0f}m {dirn}" for (d, name, dirn) in top])
+    return "; ".join([f"{humanize_location_name(name)} door {d:.0f}m {dirn}" for (d, name, dirn) in top])
 
 
 def _owned_food_and_drinks(agent) -> str:
@@ -192,16 +226,59 @@ def _vehicle_line(agent) -> str:
     return f"{vtype} at ({vx:.0f},{vy:.0f},{vz:.0f}) dist={d:.0f}m can_ride={within}"
 
 
+def _is_loc_open_now(loc, sim_time: float) -> bool:
+    current_hour = (sim_time % 86400) / 3600.0
+    if _is_all_day(loc):
+        return True
+    if loc.open_time <= loc.close_time:
+        return loc.open_time <= current_hour < loc.close_time
+    return current_hour >= loc.open_time or current_hour < loc.close_time
+
+
+def _nearby_location_hours(agent, sim_time: float, max_show: int = 6, max_dist: float = 1200.0) -> str:
+    candidates = []
+    for loc in PUBLIC_LOCATIONS_3D:
+        ex, ey, ez = get_location_entrance_point(loc)
+        d = get_distance_3d((agent.x, agent.y, agent.z), (ex, ey, ez))
+        if d <= max_dist:
+            status = "OPEN" if _is_loc_open_now(loc, sim_time) else "CLOSED"
+            if _is_all_day(loc):
+                hours = "00:00-24:00"
+            else:
+                hours = f"{_format_hour(loc.open_time)}-{_format_hour(loc.close_time)}"
+            candidates.append((d, f"{loc.name} {d:.0f}m {status} ({hours})"))
+    candidates.sort(key=lambda x: x[0])
+    top = [entry for _, entry in candidates[:max_show]]
+    return "; ".join(top) if top else "None"
+
+
 def _task_line(agent) -> str:
     if agent.task_state == "idle":
         return "Task: idle"
+
     flavor = agent.pending_task_data.get("flavor", {}) or {}
-    prop = flavor.get("pick", "")
-    target = flavor.get("obj", "")
+    prop = str(flavor.get("pick", "")).strip()
+    target = str(flavor.get("obj", "")).strip()
+
     if agent.task_state == "job_pick":
-        return f"Task: ACTIVE step=pick | do pick_item(item_name='{prop}')"
+        if prop:
+            return f"Task: ACTIVE | Next step: use pick_item for the required task prop {prop}."
+        return "Task: ACTIVE | Next step: use pick_item for the required task prop."
+
     if agent.task_state == "job_mcq":
-        return f"Task: ACTIVE step=answer | do interact_with(person_or_object='{target}', action='A|B|C')"
+        q = str(flavor.get("q", "")).strip()
+        choices = flavor.get("choices", {}) or {}
+        a = str(choices.get("A", "")).strip()
+        b = str(choices.get("B", "")).strip()
+        c = str(choices.get("C", "")).strip()
+        return (
+            "Task: ACTIVE | Next step: answer the current scenario.\n"
+            f"Task Target: {target or 'Unknown'}\n"
+            f"Question: {q or 'Unknown'}\n"
+            f"Choices: A) {a} | B) {b} | C) {c}\n"
+            f"Answer by using interact_with on {target or 'the target'} with action A, B, or C."
+        )
+
     return f"Task: {agent.task_state}"
 
 
@@ -218,28 +295,34 @@ def build_messages(agent_id: int, world, notifications: str) -> List[dict]:
 
     loc_label = _display_location(agent, world)
     loc_def = get_current_location_def(agent.x, agent.y, agent.z)
-    inside_name = loc_def.name if loc_def else "Outside"
+    inside_name = humanize_location_name(loc_def.name) if loc_def else "Outside"
 
     notif_str = notifications.strip() if notifications and notifications.strip() else "None"
     nearby_people = _nearby_people_same_floor(agent, world)
     visible_objs = _visible_objects_here(agent) if loc_def else "None"
     nearby_doors = _nearest_entrances(agent) if not loc_def else "None"
+    nearby_hours = _nearby_location_hours(agent, world.sim_time)
 
     user_msg = (
         "Stats:\n"
-        f"Time: {get_clock(world.sim_time)}\n"
+        f"Date/Time: {get_time_string(world.sim_time)}\n"
         f"Weather: {world.weather}\n"
         f"Location: ({agent.x:.0f},{agent.y:.0f},{agent.z:.0f}) [{loc_label}] (inside={inside_name})\n"
         f"Money: ${agent.money:.2f}\n"
+        f"Health: {agent.health:.0f}%\n"
         f"Hunger: {agent.hunger:.0f}%\n"
         f"Energy: {agent.energy:.0f}%\n"
         f"Hydration: {getattr(agent, 'hydration', 0.0):.0f}%\n"
+        f"Stress: {agent.stress:.0f}%\n"
+        f"Happiness: {agent.happiness:.0f}%\n"
+        f"Current Activity: {agent.current_activity}\n"
         f"Held Item: {held}\n"
         f"Inv Count: {len(agent.inventory)}\n"
         f"Food/Drink Owned: {_owned_food_and_drinks(agent)}\n"
         f"Nearby People: {nearby_people}\n"
         f"Visible Objects: {visible_objs}\n"
         f"Nearby Doors (if outside): {nearby_doors}\n"
+        f"Nearby Locations/Hrs: {nearby_hours}\n"
         f"Vehicle: {_vehicle_line(agent)}\n"
         f"Market line: {market_status}, ${world.market_price:.2f}, stocks owned: {agent.shares_owned}\n"
         f"{_task_line(agent)}\n"
@@ -257,9 +340,6 @@ def render_prompt(messages: list) -> str:
 
 
 def estimate_prompt_tokens(messages: list, prompt_text: Optional[str] = None) -> int:
-    """
-    If prompt_text is provided, avoids re-rendering (optimization).
-    """
     if prompt_text is None:
         prompt_text = render_prompt(messages)
     return max(1, len(prompt_text) // CHARS_PER_TOKEN)
@@ -309,9 +389,6 @@ def manage_slot(agent_id: int, action: str):
 
 
 def call_server(messages: list, agent_id: int, prompt_text: Optional[str] = None) -> tuple:
-    """
-    If prompt_text is provided, avoids re-rendering (optimization).
-    """
     manage_slot(agent_id, action="restore")
     if prompt_text is None:
         prompt_text = render_prompt(messages)
