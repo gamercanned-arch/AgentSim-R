@@ -12,6 +12,7 @@ import jinja2
 from config import (
     CACHE_DIR,
     CHARS_PER_TOKEN,
+    MAX_INVENTORY,
     MAX_NEW_TOKENS,
     PROMPTS_DIR,
     TOOLS_PATH,
@@ -96,7 +97,7 @@ def _build_base_system_prompt(agent) -> str:
         "- Coordinates shown in observations are read-only telemetry. Never pass coordinates into any tool.\n"
         "- For move_to, use only a named public location or a home alias like Home_Taylor. Never use raw coordinates or internal location IDs.\n"
         "- Place, item, and person names are normalized loosely by the engine, so close variants like Startup Sowl or Office FedEx are acceptable.\n"
-        "- move_to travels to the OUTSIDE entrance area; to enter a building, walk into its boundary.\n"
+        "- move_to travels to the OUTSIDE entrance area for roofed buildings; open-air locations place you directly there.\n"
         "- Vehicles: you can ride only if within 100m of your parked vehicle; fuel costs $/km when riding.\n"
         "- If you cannot afford fuel, you walk instead.\n"
         "- pick_item is for nearby dropped ground items, or for the required task prop during an active work or study task.\n"
@@ -317,7 +318,7 @@ def build_messages(agent_id: int, world, notifications: str) -> List[dict]:
         f"Happiness: {agent.happiness:.0f}%\n"
         f"Current Activity: {agent.current_activity}\n"
         f"Held Item: {held}\n"
-        f"Inv Count: {len(agent.inventory)}\n"
+        f"Inv Count: {len(agent.inventory)}/{MAX_INVENTORY}\n"
         f"Food/Drink Owned: {_owned_food_and_drinks(agent)}\n"
         f"Nearby People: {nearby_people}\n"
         f"Visible Objects: {visible_objs}\n"
