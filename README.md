@@ -217,12 +217,10 @@ Passive updates occur once per simulated hour.
 
 ### 10.1 Happiness model
 
-Relationships scaling:
-$$
-R_{\text{scaled}} = \min\left(100,\; \frac{\text{relationships}}{5}\cdot 100\right)
-$$
+Relationships scaling:   
+$$R_{\text{scaled}} = \min\left(100,\; \frac{\text{relationships}}{5}\cdot 100\right)$$
 
-Happiness target:
+Happiness target:   
 $$
 H^* = 0.3\cdot \text{health} \;+\; 0.3\cdot R_{\text{scaled}}
 \;+\; 0.4\cdot 100 \cdot \tanh\!\left(\frac{\text{money}}{\text{expenses} + \varepsilon}\right)
@@ -230,7 +228,7 @@ $$
 
 with \(\varepsilon = 1\).
 
-Update:
+Update:   
 $$
 \text{happiness}_{t+1} =
 \mathrm{clamp}_{0,100}\!\left(0.7\cdot \text{happiness}_t + 0.3\cdot H^*\right)
@@ -238,32 +236,32 @@ $$
 
 ### 10.2 Stress model
 
-Relationship tension components:
+Relationship tension components:   
 $$
 \text{loneliness} = \max(0, 3-\text{relationships})^2
 $$
 $$
 \text{crowding} = \max(0, \text{relationships}-10)\cdot 2
-$$
+$$   
 $$
 \text{rel\_tension} = w_1(\text{loneliness}+\text{crowding})
 \quad\text{where } w_1 = 1
 $$
 
-Financial pressure:
+Financial pressure:   
 $$
 \text{fin\_pressure} = w_2 \cdot \frac{\text{expenses}}{\max(0,\text{money}) + 1}
 \quad\text{where } w_2 = 2
 $$
 
-Market anxiety (only when shares owned and price drops):
+Market anxiety (only when shares owned and price drops):   
 $$
 \text{market\_anxiety} \propto w_3 \cdot |\Delta P|\cdot
 \frac{\text{position\_value}}{\max(0,\text{money})+1}
 \quad\text{where } w_3=0.5
 $$
 
-Base stress target:
+Base stress target:   
 $$
 \Psi^* =
 \frac{\text{rel\_tension} + \text{fin\_pressure} + \text{market\_anxiety}}
@@ -272,13 +270,13 @@ $$
 $$
 
 Hydration scaling (only when awake):
-- if hydration < 30: \(\Psi^* \leftarrow 1.1\Psi^*\)
-- if hydration < 15: \(\Psi^* \leftarrow 1.25\Psi^*\)
+- if hydration < 30: $\Psi^* \leftarrow 1.1\Psi^*$
+- if hydration < 15: $\Psi^* \leftarrow 1.25\Psi^*$
 
 Debt penalty:
-- if money < 0: multiply stress target by \(1.5\)
+- if money < 0: multiply stress target by $1.5$
 
-Update:
+Update:   
 $$
 \text{stress}_{t+1} =
 \mathrm{clamp}_{0,100}\!\left(0.7\cdot \text{stress}_t + 0.3\cdot \Psi^*\cdot \text{debt\_penalty}\right)
@@ -286,7 +284,7 @@ $$
 
 ### 10.3 Health model
 
-Age factor:
+Age factor:   
 $$
 A = e^{0.02\cdot \text{age}}
 $$
@@ -295,7 +293,7 @@ Energy penalty:
 - 0 if energy > 10
 - 0.5 otherwise
 
-Dehydration penalty:
+Dehydration penalty:   
 $$
 D =
 \begin{cases}
@@ -304,7 +302,7 @@ D =
 \end{cases}
 $$
 
-Health delta:
+Health delta:   
 $$
 \Delta \text{health} =
 \Big(
@@ -313,17 +311,17 @@ $$
 \Big)\cdot A \cdot 0.02
 $$
 
-Update:
+Update:   
 $$
 \text{health}_{t+1} = \mathrm{clamp}_{0,100}\!\left(\text{health}_t + \Delta\text{health}\right)
 $$
 
-Starvation damage (if hunger = 100 for consecutive hours):
+Starvation damage (if hunger = 100 for consecutive hours):   
 $$
 \text{health} \leftarrow \text{health} - \min(32,\; 2^{h})
 $$
 
-Dehydration damage (if hydration = 0 for consecutive hours):
+Dehydration damage (if hydration = 0 for consecutive hours):   
 $$
 \text{health} \leftarrow \text{health} - \min(16,\; 1.5^{d})
 $$
@@ -365,7 +363,7 @@ Rules:
 Work and study duration is capped:
 - **1 to 10 hours**
 
-### Pay model (work)
+### Pay model (work)   
 $$
 \text{pay} = \text{hourly\_wage}\cdot \text{hours}\cdot \frac{\text{market\_price}}{100}
 $$
@@ -388,7 +386,7 @@ Half pay if incorrect.
 Market open:
 - Mon–Fri 09:30–16:00
 
-Price updates hourly during open hours:
+Price updates hourly during open hours:   
 $$
 P_{t+1} = P_t \cdot \exp\Big((\mu-\tfrac{1}{2}\sigma^2) + \sigma \epsilon_t\Big)\cdot \text{impact}
 $$
