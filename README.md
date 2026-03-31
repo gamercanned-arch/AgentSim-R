@@ -265,9 +265,13 @@ $$
 #### 10.2 Stress model
 
 Relationship tension components:
+
+
 $$
 \text{loneliness} = \max(0, 3 - \text{relationships})^2
 $$
+
+
 $$
 \text{crowding} = \max(0, \text{relationships} - 10) \cdot 2
 $$
@@ -276,19 +280,23 @@ $$
 $$
 
 Financial pressure:
+
 $$
 \text{fin}_{\text{pressure}} = w_2 \cdot \frac{\text{expenses}}{\max(0, \text{money}) + 1} \quad \text{where } w_2 = 2
 $$
 
 Market anxiety (only when shares are owned and price drops):
+
 $$
 \text{market}_{\text{anxiety}} \propto w_3 \cdot |\Delta P| \cdot \frac{\text{position_value}}{\max(0, \text{money}) + 1} \quad \text{where } w_3 = 0.5
 $$
 
 Base stress target:
+
 $$
 \Psi^* = \frac{\text{rel}_{\text{tension}} + \text{fin}_{\text{pressure}} + \text{market}_{\text{anxiety}}}{1 + \alpha \cdot \text{happiness} + \beta \cdot \text{hourly_wage}}
 $$
+
 where $\alpha = 0.01$, $\beta = 0.001$.
 
 Hydration scaling (only when awake):
@@ -299,60 +307,49 @@ Debt penalty:
 - if money < 0: multiply stress target by 1.5
 
 Update:
+
 $$
 \text{stress}_{t+1} = \mathrm{clamp}_{[0,100]}\left(0.7 \cdot \text{stress}_t + 0.3 \cdot \Psi^* \cdot \text{debt_penalty}\right)
 $$
 
-### 10.3 Health model
+#### 10.3 Health model
 
 Age factor:
 
 $$
-A = e^{0.02\cdot \text{age}}
+A = e^{0.02 \cdot \text{age}}
 $$
 
-Energy penalty:
-
-* `0` if energy > 10
-* `0.5` otherwise
+Energy penalty:  
+0 if energy > 10, else 0.5
 
 Dehydration penalty:
 
 $$
-D =
+D = 
 \begin{cases}
-(20-\text{hydration})\cdot 0.2 & \text{if hydration} < 20 \
+(20 - \text{hydration}) \cdot 0.2 & \text{if hydration} < 20 \\
 0 & \text{otherwise}
 \end{cases}
 $$
 
 Health delta:
 
-$$\Delta \text{health}$$   
-====================      
 $$
-\Big(
--\big(0.5\cdot \text{stress} + 0.3\cdot \text{hunger} + 10\cdot \text{energy_penalty} + D\big)*0.1\cdot \text{happiness}
-  \Big)\cdot A \cdot 0.02
-  $$
+\Delta\text{health} = \Bigl[-\bigl(0.5 \cdot \text{stress} + 0.3 \cdot \text{hunger} + 10 \cdot \text{energy_penalty} + D\bigr) \cdot 0.1 \cdot \text{happiness}\Bigr] \cdot A \cdot 0.02
+$$
 
 Update:
 
 $$
-\text{health}*{t+1} = \mathrm{clamp}*{[0,100]}!\left(\text{health}_t + \Delta\text{health}\right)
+\text{health}_{t+1} = \mathrm{clamp}_{[0,100]}\left(\text{health}_t + \Delta\text{health}\right)
 $$
 
-Starvation damage (if hunger = 100 for consecutive hours):
+Starvation damage (if hunger = 100 for consecutive hours):  
+$\text{health} \leftarrow \text{health} - \min(32, 2^h)$
 
-$$
-\text{health} \leftarrow \text{health} - \min(32,; 2^{h})
-$$
-
-Dehydration damage (if hydration = 0 for consecutive hours):
-
-$$
-\text{health} \leftarrow \text{health} - \min(16,; 1.5^{d})
-$$
+Dehydration damage (if hydration = 0 for consecutive hours):  
+$\text{health} \leftarrow \text{health} - \min(16, 1.5^d)$
 
 If health ≤ 0: agent dies and becomes a lootable estate.
 
@@ -360,22 +357,22 @@ If health ≤ 0: agent dies and becomes a lootable estate.
 
 Per simulated hour:
 
-* hunger increases by:
+- hunger increases by:
 
-  * $+5$ if awake
-  * $+0.5$ if sleeping
-* hydration decreases by:
+  - $+5$ if awake
+  - $+0.5$ if sleeping
+- hydration decreases by:
 
-  * $-4$ if awake
-  * $-1.5$ if sleeping
-* energy decreases by:
+  - $-4$ if awake
+  - $-1.5$ if sleeping
+- energy decreases by:
 
-  * $-2$ if awake
+  - $-2$ if awake
 
 Emergency triggers:
 
-* if awake and hunger ≥ 90 → attempt emergency consume/buy
-* if awake and hydration ≤ 12 → attempt emergency drink/buy
+- if awake and hunger ≥ 90 → attempt emergency consume/buy
+- if awake and hydration ≤ 12 → attempt emergency drink/buy
 
 ---
 
