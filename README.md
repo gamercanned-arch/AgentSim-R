@@ -1,11 +1,11 @@
 # AgentSim-R — Agent Simulation (Research)
 
-AgentSim-R is a synthetic “imaginary world” simulation of multiple LLM-driven agents acting under explicit constraints: **time, money, energy, hunger, hydration, open hours, proximity, inventory limits, and inventory/hand state**. The goal is to study **emergent behavior** (economic, social, and survival dynamics) when agents must make grounded decisions in a shared environment.
+AgentSim-R is a synthetic "imaginary world" simulation of multiple LLM-driven agents acting under explicit constraints: **time, money, energy, hunger, hydration, open hours, proximity, inventory limits, and inventory/hand state**. The goal is to study **emergent behavior** (economic, social, and survival dynamics) when agents must make grounded decisions in a shared environment.
 
 This is not freeform roleplay. Agents must choose **one concrete action per turn** via tool calls, and the environment enforces hard constraints.
 
 > [!NOTE]
-> **Summary**: This project is aimed at observing *emergent behavior* when multiple agents interact in a shared environment with enforceable rules. It is designed to be research-auditable and grounded, not “creative RP”.
+> **Summary**: This project is aimed at observing *emergent behavior* when multiple agents interact in a shared environment with enforceable rules. It is designed to be research-auditable and grounded, not "creative RP".
 
 ---
 
@@ -115,7 +115,7 @@ The village is a continuous coordinate plane (`0..5000m` on both x and y), with 
 Primary files:
 - Locations + bounding boxes: `python/locations.py`
 - Each location has an entrance point
-- Agents are either “Outside” or inside a location box
+- Agents are either "Outside" or inside a location box
 
 Public locations include:
 - `Hospital`, `School`, `Office_FedEx`, `Startup_Sowl`
@@ -143,7 +143,7 @@ Prompts/logs use real date formatting.
 The simulation is event-driven:
 - each agent has a `busy_until` timestamp
 - the scheduler always picks the next available agent
-- passive “hourly ticks” apply when simulated time advances
+- passive "hourly ticks" apply when simulated time advances
 
 This approximates parallel action: one agent can be busy for hours while others continue acting.
 
@@ -152,20 +152,19 @@ This approximates parallel action: one agent can be busy for hours while others 
 ## 7) Movement + pathing (Python DSA, shortest-route)
 
 Movement distance is computed with an infrastructure-aware approximation:
-- a coarse road grid over the `5km × 5km` plane
+- a coarse road grid over the $5\text{km} \times 5\text{km}$ plane
 - shortest path via **A\*** on a 4-neighbor grid
 - connector distance from real coordinates to nearest road nodes
 
 Let:
-- grid spacing be \( s = 250 \) meters
-- \(d_{tail}\) be distance from start to nearest road node
-- \(d_{grid}\) be A\* path length on the road grid
-- \(d_{head}\) be distance from destination road node to destination point
+- grid spacing be $s = 250$ meters
+- $d_{\text{tail}}$ be distance from start to nearest road node
+- $d_{\text{grid}}$ be $A^*$ path length on the road grid
+- $d_{\text{head}}$ be distance from destination road node to destination point
 
 Then:
-$$
-d = d_{tail} + d_{grid} + d_{head}
-$$
+
+$$d = d_{\text{tail}} + d_{\text{grid}} + d_{\text{head}}$$
 
 Implemented in `python/tooling/navigation.py`.
 
@@ -201,7 +200,7 @@ Key numeric state (bounded unless noted):
 
 The prompt surfaces a compact subset including:
 - time/date
-- location + “inside/outside”
+- location + "inside/outside"
 - needs + money
 - nearby people + visible objects
 - nearby open/closed info
@@ -217,114 +216,82 @@ Passive updates occur once per simulated hour.
 
 ### 10.1 Happiness model
 
-Relationships scaling:   
-$$R_{\text{scaled}} = \min\left(100,\; \frac{\text{relationships}}{5}\cdot 100\right)$$
+Relationships scaling:
 
-Happiness target:   
-$$
-H^* = 0.3\cdot \text{health} \;+\; 0.3\cdot R_{\text{scaled}}
-\;+\; 0.4\cdot 100 \cdot \tanh\!\left(\frac{\text{money}}{\text{expenses} + \varepsilon}\right)
-$$
+$$R_{\text{scaled}} = \min\!\left(100,\; \frac{\text{relationships}}{5}\cdot 100\right)$$
 
-with \(\varepsilon = 1\).
+Happiness target:
 
-Update:   
-$$
-\text{happiness}_{t+1} =
-\mathrm{clamp}_{0,100}\!\left(0.7\cdot \text{happiness}_t + 0.3\cdot H^*\right)
-$$
+$$H^* = 0.3\cdot \text{health} \;+\; 0.3\cdot R_{\text{scaled}} \;+\; 0.4\cdot 100 \cdot \tanh\!\left(\frac{\text{money}}{\text{expenses} + \varepsilon}\right)$$
+
+with $\varepsilon = 1$.
+
+Update:
+
+$$\text{happiness}_{t+1} = \mathrm{clamp}_{[0,100]}\!\left(0.7\cdot \text{happiness}_t + 0.3\cdot H^*\right)$$
 
 ### 10.2 Stress model
 
-Relationship tension components:   
-$$
-\text{loneliness} = \max(0, 3-\text{relationships})^2
-$$
-$$
-\text{crowding} = \max(0, \text{relationships}-10)\cdot 2
-$$   
-$$
-\text{rel\_tension} = w_1(\text{loneliness}+\text{crowding})
-\quad\text{where } w_1 = 1
-$$
+Relationship tension components:
 
-Financial pressure:   
-$$
-\text{fin\_pressure} = w_2 \cdot \frac{\text{expenses}}{\max(0,\text{money}) + 1}
-\quad\text{where } w_2 = 2
-$$
+$$\text{loneliness} = \max(0,\; 3-\text{relationships})^2$$
 
-Market anxiety (only when shares owned and price drops):   
-$$
-\text{market\_anxiety} \propto w_3 \cdot |\Delta P|\cdot
-\frac{\text{position\_value}}{\max(0,\text{money})+1}
-\quad\text{where } w_3=0.5
-$$
+$$\text{crowding} = \max(0,\; \text{relationships}-10)\cdot 2$$
 
-Base stress target:   
-$$
-\Psi^* =
-\frac{\text{rel\_tension} + \text{fin\_pressure} + \text{market\_anxiety}}
-{1 + \alpha\cdot \text{happiness} + \beta\cdot \text{hourly\_wage}}
-\quad\text{where } \alpha=0.01,\; \beta=0.001
-$$
+$$\text{rel\_tension} = w_1(\text{loneliness}+\text{crowding}) \quad\text{where } w_1 = 1$$
+
+Financial pressure:
+
+$$\text{fin\_pressure} = w_2 \cdot \frac{\text{expenses}}{\max(0,\text{money}) + 1} \quad\text{where } w_2 = 2$$
+
+Market anxiety (only when shares owned and price drops):
+
+$$\text{market\_anxiety} \propto w_3 \cdot |\Delta P|\cdot \frac{\text{position\_value}}{\max(0,\text{money})+1} \quad\text{where } w_3=0.5$$
+
+Base stress target:
+
+$$\Psi^* = \frac{\text{rel\_tension} + \text{fin\_pressure} + \text{market\_anxiety}}{1 + \alpha\cdot \text{happiness} + \beta\cdot \text{hourly\_wage}} \quad\text{where } \alpha=0.01,\; \beta=0.001$$
 
 Hydration scaling (only when awake):
-- if hydration < 30: $\Psi^* \leftarrow 1.1\Psi^*$
-- if hydration < 15: $\Psi^* \leftarrow 1.25\Psi^*$
+- if hydration < 30: $\Psi^* \leftarrow 1.1\,\Psi^*$
+- if hydration < 15: $\Psi^* \leftarrow 1.25\,\Psi^*$
 
 Debt penalty:
 - if money < 0: multiply stress target by $1.5$
 
-Update:   
-$$
-\text{stress}_{t+1} =
-\mathrm{clamp}_{0,100}\!\left(0.7\cdot \text{stress}_t + 0.3\cdot \Psi^*\cdot \text{debt\_penalty}\right)
-$$
+Update:
+
+$$\text{stress}_{t+1} = \mathrm{clamp}_{[0,100]}\!\left(0.7\cdot \text{stress}_t + 0.3\cdot \Psi^*\cdot \text{debt\_penalty}\right)$$
 
 ### 10.3 Health model
 
-Age factor:   
-$$
-A = e^{0.02\cdot \text{age}}
-$$
+Age factor:
+
+$$A = e^{0.02\cdot \text{age}}$$
 
 Energy penalty:
-- 0 if energy > 10
-- 0.5 otherwise
+- $0$ if energy $> 10$
+- $0.5$ otherwise
 
-Dehydration penalty:   
-$$
-D =
-\begin{cases}
-(20-\text{hydration})\cdot 0.2 & \text{if hydration}<20 \\
-0 & \text{otherwise}
-\end{cases}
-$$
+Dehydration penalty:
 
-Health delta:   
-$$
-\Delta \text{health} =
-\Big(
--\big(0.5\cdot \text{stress} + 0.3\cdot \text{hunger} + 10\cdot \text{energy\_penalty} + D\big)
-+ 0.1\cdot \text{happiness}
-\Big)\cdot A \cdot 0.02
-$$
+$$D = \begin{cases} (20-\text{hydration})\cdot 0.2 & \text{if hydration} < 20 \\ 0 & \text{otherwise} \end{cases}$$
 
-Update:   
-$$
-\text{health}_{t+1} = \mathrm{clamp}_{0,100}\!\left(\text{health}_t + \Delta\text{health}\right)
-$$
+Health delta:
 
-Starvation damage (if hunger = 100 for consecutive hours):   
-$$
-\text{health} \leftarrow \text{health} - \min(32,\; 2^{h})
-$$
+$$\Delta \text{health} = \Big( -\big(0.5\cdot \text{stress} + 0.3\cdot \text{hunger} + 10\cdot \text{energy\_penalty} + D\big) + 0.1\cdot \text{happiness} \Big)\cdot A \cdot 0.02$$
 
-Dehydration damage (if hydration = 0 for consecutive hours):   
-$$
-\text{health} \leftarrow \text{health} - \min(16,\; 1.5^{d})
-$$
+Update:
+
+$$\text{health}_{t+1} = \mathrm{clamp}_{[0,100]}\!\left(\text{health}_t + \Delta\text{health}\right)$$
+
+Starvation damage (if hunger $= 100$ for consecutive hours):
+
+$$\text{health} \leftarrow \text{health} - \min(32,\; 2^{h})$$
+
+Dehydration damage (if hydration $= 0$ for consecutive hours):
+
+$$\text{health} \leftarrow \text{health} - \min(16,\; 1.5^{d})$$
 
 If health ≤ 0: agent dies and becomes a lootable estate.
 
@@ -332,17 +299,17 @@ If health ≤ 0: agent dies and becomes a lootable estate.
 
 Per simulated hour:
 - hunger increases by:
-  - +5 if awake
-  - +0.5 if sleeping
+  - $+5$ if awake
+  - $+0.5$ if sleeping
 - hydration decreases by:
-  - −4 if awake
-  - −1.5 if sleeping
+  - $-4$ if awake
+  - $-1.5$ if sleeping
 - energy decreases by:
-  - −2 if awake
+  - $-2$ if awake
 
 Emergency triggers:
-- if awake and hunger ≥ 90 → attempt emergency consume/buy
-- if awake and hydration ≤ 12 → attempt emergency drink/buy
+- if awake and hunger $\geq 90$ → attempt emergency consume/buy
+- if awake and hydration $\leq 12$ → attempt emergency drink/buy
 
 ---
 
@@ -363,16 +330,15 @@ Rules:
 Work and study duration is capped:
 - **1 to 10 hours**
 
-### Pay model (work)   
-$$
-\text{pay} = \text{hourly\_wage}\cdot \text{hours}\cdot \frac{\text{market\_price}}{100}
-$$
+### Pay model (work)
+
+$$\text{pay} = \text{hourly\_wage}\cdot \text{hours}\cdot \frac{\text{market\_price}}{100}$$
 
 Half pay if incorrect.
 
 ### Education model
-- education +5 and wage +5 if correct
-- education +1 and wage +1 if incorrect
+- education $+5$ and wage $+5$ if correct
+- education $+1$ and wage $+1$ if incorrect
 - tuition charged up front:
   - baseline 2000
   - masters 4000
@@ -386,10 +352,9 @@ Half pay if incorrect.
 Market open:
 - Mon–Fri 09:30–16:00
 
-Price updates hourly during open hours:   
-$$
-P_{t+1} = P_t \cdot \exp\Big((\mu-\tfrac{1}{2}\sigma^2) + \sigma \epsilon_t\Big)\cdot \text{impact}
-$$
+Price updates hourly during open hours:
+
+$$P_{t+1} = P_t \cdot \exp\!\Big((\mu-\tfrac{1}{2}\sigma^2) + \sigma \epsilon_t\Big)\cdot \text{impact}$$
 
 Impact is based on net volume that hour; prices are clamped to a sane range.
 
@@ -400,7 +365,7 @@ Orders placed when closed are queued and executed during open hours.
 ## 13) Taxes
 
 A midnight tax is applied, but low-cash agents are exempt:
-- if money < `TAX_EXEMPT_BELOW_CASH` (200): no tax
+- if money $<$ `TAX_EXEMPT_BELOW_CASH` (200): no tax
 - else: subtract `TAX_AMOUNT`
 
 ---
@@ -419,7 +384,7 @@ Social rules:
 
 Notifications can accumulate while an agent is busy. To keep prompts usable:
 - only a limited number of notifications are shown per turn
-- the rest remain queued and a count is shown: “Queued notifications remaining: N”
+- the rest remain queued and a count is shown: "Queued notifications remaining: N"
 
 ---
 
