@@ -6,9 +6,18 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+# Ensure the simulation modules (python/*.py) are importable as top-level modules
+# like `import scheduler`, `import config`, etc.
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_DIR = ROOT / "python"
-sys.path.insert(0, str(PYTHON_DIR))
+
+# Put ./python first so `import config` resolves to python/config.py
+if str(PYTHON_DIR) not in sys.path:
+    sys.path.insert(0, str(PYTHON_DIR))
+
+# Also keep repo root importable (general sanity)
+if str(ROOT) not in sys.path:
+    sys.path.insert(1, str(ROOT))
 
 
 @pytest.fixture(autouse=True)
@@ -19,7 +28,9 @@ def _seed_everything():
 
 @pytest.fixture()
 def temp_logs(tmp_path, monkeypatch):
-    # Redirect logger writes into a temp directory (prevents polluting real ./logs)
+    """
+    Redirect logger writes into a temp directory (prevents polluting real ./logs).
+    """
     import logger as _logger
 
     monkeypatch.setattr(_logger, "LOG_DIR", str(tmp_path))
@@ -30,7 +41,7 @@ def temp_logs(tmp_path, monkeypatch):
 def tool_xml(tool_name: str, **params) -> str:
     """
     Build a valid single XML tool call compatible with tooling/parsing.py.
-    Values are inserted as raw text; keep test strings simple (no XML metachars).
+    Values are inserted as raw text; keep test strings simple (avoid XML metachars).
     """
     parts = ["<tool_call>\n", f"<function={tool_name}>\n"]
     for k, v in params.items():
@@ -42,7 +53,9 @@ def tool_xml(tool_name: str, **params) -> str:
 class StubServer:
     """
     Monkeypatch target for scheduler.call_server.
+
     plans = { agent_id: [xml1, xml2, ...], ... }
+
     Records last_messages per agent_id so tests can inspect the observation content.
     """
 
