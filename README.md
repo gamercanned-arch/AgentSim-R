@@ -332,8 +332,7 @@ $$\Delta \text{health}$$
 ====================      
 $$
 \Big(
--\big(0.5\cdot \text{stress} + 0.3\cdot \text{hunger} + 10\cdot \text{energy_penalty} + D\big)
-* 0.1\cdot \text{happiness}
+-\big(0.5\cdot \text{stress} + 0.3\cdot \text{hunger} + 10\cdot \text{energy_penalty} + D\big)*0.1\cdot \text{happiness}
   \Big)\cdot A \cdot 0.02
   $$
 
