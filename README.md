@@ -262,20 +262,24 @@ $$
 \text{happiness}*{t+1} = \mathrm{clamp}*{[0,100]}!\left(0.7\cdot \text{happiness}_{t} + 0.3\cdot H^*\right)
 $$
 
-Financial pressure:     
+Financial pressure:
+
 $$
 \text{fin}_{\text{pressure}} = w_2 \cdot \frac{\text{expenses}}{\max(0, \text{money}) + 1} \quad \text{where } w_2 = 2
 $$
 
 Market anxiety (only when shares are owned and price drops):   
+
 $$
 \text{market}_{\text{anxiety}} \propto w_3 \cdot |\Delta P| \cdot \frac{\text{position}_{value}}{\max(0, \text{money}) + 1} \quad \text{where } w_3 = 0.5
 $$
 
 Base stress target:   
+
 $$
 \Psi^* = \frac{\text{rel}_{\text{tension}} + \text{fin}_{\text{pressure}} + \text{market}_{\text{anxiety}}}{1 + \alpha \cdot \text{happiness} + \beta \cdot \text{hourly}_{wage}}
 $$   
+
 where $\alpha = 0.01$, $\beta = 0.001$.
 
 Hydration scaling (only when awake):
@@ -286,6 +290,7 @@ Debt penalty:
 - if money < 0: multiply stress target by 1.5
 
 Update:   
+
 $$
 \text{stress}_{t+1} = \mathrm{clamp}_{[0,100]}\left(0.7 \cdot \text{stress}_t + 0.3 \cdot \Psi^* \cdot \text{debt}_{penalty}\right)
 $$
@@ -293,6 +298,7 @@ $$
 #### 10.3 Health model
 
 Age factor:   
+
 $$
 A = e^{0.02 \cdot \text{age}}
 $$
@@ -300,7 +306,8 @@ $$
 Energy penalty:  
 0 if energy > 10, else 0.5
 
-Dehydration penalty:   
+Dehydration penalty: 
+
 $$
 D = 
 \begin{cases}
@@ -310,11 +317,13 @@ D =
 $$
 
 Health delta:   
+
 $$
 \Delta\text{health} = \Bigl[-\bigl(0.5 \cdot \text{stress} + 0.3 \cdot \text{hunger} + 10 \cdot \text{energy}_{penalty} + D\bigr) \cdot 0.1 \cdot \text{happiness}\Bigr] \cdot A \cdot 0.02
 $$
 
 Update:
+
 $$
 \text{health}_{t+1} = \mathrm{clamp}_{[0,100]}\left(\text{health}_t + \Delta\text{health}\right)
 $$
