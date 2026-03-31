@@ -405,7 +405,7 @@ Work and study duration is capped:
 #### Pay model (work)
 
 $$
-\text{pay} = \text{hourly|_{wage} \cdot \text{hours} \cdot \frac{\text{market}_{price}}{100}
+\text{pay} = \text{hourly}_{wage} \cdot \text{hours} \cdot \frac{\text{market}_{price}}{100}
 $$
 
 Half pay if incorrect.
