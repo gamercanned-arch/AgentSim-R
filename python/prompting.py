@@ -346,7 +346,7 @@ def build_messages(agent_id: int, world, notifications: str) -> List[dict]:
         f"Nearby Doors (if outside): {nearby_doors}\n"
         f"Nearby Locations/Hrs: {nearby_hours}\n"
         f"Vehicle: {_vehicle_line(agent)}\n"
-        f"Market line: {market_status}, ${world.market_price:.2f}, stocks owned: {agent.shares_owned}\n"
+        f"Market line: {market_status}, ${world.market_price:.4f}, stocks owned: {agent.shares_owned}\n"
         f"Voicemail Inbox: {vm_count} message(s)\n"
         f"Voicemails (most recent):\n{vm_preview}\n"
         f"{_task_line(agent)}\n"

@@ -73,7 +73,7 @@ class AgentState:
     vehicle_y: float = 0.0
     vehicle_z: float = 0.0
 
-    # New: voicemail persistence (max kept enforced in social handler)
+    # Voicemail persistence
     voicemail_inbox: List[Dict[str, Any]] = field(default_factory=list)
 
     first_turn: bool = True
@@ -97,12 +97,14 @@ class WorldState:
         self.store_inventory: Dict[str, int] = {}
         self.last_restock_time: float = 0.0
 
+        # New: separate market tick clock (advanced in scheduler)
+        self.last_market_tick: float = 0.0
+
         self.vacant_home_lots: Dict[str, List[str]] = get_home_lots_inventory()
         self.ground_items: List[Dict[str, Any]] = []
         self.corpse_estates: List[Dict[str, Any]] = []
 
-        # New: queued deliveries for give_item / give_money when target is busy/sleeping.
-        # Each entry: {"id": str, "kind": "item"|"money", "from_id": int, "to_id": int, "item": dict, "amount": float, "created_at": float}
+        # queued deliveries for give_item / give_money when target is busy/sleeping
         self.pending_deliveries: List[Dict[str, Any]] = []
 
     def allocate_home_lot(self, home_type: str, prefer_floor1: bool = False) -> Optional[str]:

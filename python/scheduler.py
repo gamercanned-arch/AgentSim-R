@@ -9,7 +9,12 @@ from config import (
     BASE_STORE_INVENTORY,
     CONTEXT_FILL_RATIO,
     CONTEXT_SIZE,
+    IMPACT_CLAMP_HI,
+    IMPACT_CLAMP_LO,
     IMPACT_FACTOR,
+    JUMP_PROB_PER_HOUR,
+    JUMP_SIGMA,
+    MARKET_TICK_SECONDS,
     MAX_INVENTORY,
     MAX_NEW_TOKENS,
     PASSIVE_TICK_SECONDS,
@@ -59,9 +64,6 @@ def _sha16(text: str) -> str:
 
 
 def _peek_notifications_for_prompt(agent, max_count: int = 12, max_chars: int = 1800) -> tuple[list[str], int]:
-    """
-    Return (shown_lines, remaining_count) without mutating pending_notifications.
-    """
     pending = list(getattr(agent, "pending_notifications", []) or [])
     shown = []
     total = 0
@@ -116,7 +118,6 @@ def _process_pending_deliveries(world, current_time: float) -> None:
         sender = world.agents.get(from_id) if isinstance(from_id, int) else None
         target = world.agents.get(to_id) if isinstance(to_id, int) else None
 
-        # If target missing or dead: refund to sender if possible; otherwise drop/lose.
         if not target or not target.alive:
             if kind == "money":
                 amt = float(d.get("amount", 0.0))
@@ -140,7 +141,6 @@ def _process_pending_deliveries(world, current_time: float) -> None:
                         )
             continue
 
-        # Wait until target is available (not sleeping, not mid-task, not time-busy).
         if target.is_sleeping or target.task_state != "idle" or float(target.busy_until) > float(current_time):
             new_deliveries.append(d)
             continue
@@ -159,7 +159,6 @@ def _process_pending_deliveries(world, current_time: float) -> None:
                 continue
 
             if len(target.inventory) >= MAX_INVENTORY:
-                # Cancel delivery and return to sender
                 if sender and sender.alive:
                     if len(sender.inventory) < MAX_INVENTORY:
                         sender.inventory.append(item)
@@ -178,7 +177,6 @@ def _process_pending_deliveries(world, current_time: float) -> None:
                             f"A queued item delivery from {sender.name} was cancelled because your inventory was full."
                         )
                 else:
-                    # Sender unavailable; drop at recipient.
                     _drop_ground_item(world, target.x, target.y, target.z, item, dropper_id=-1)
                     target.pending_notifications.append(
                         "A queued item delivery could not be returned to the sender. It was dropped on the ground near you."
@@ -195,8 +193,33 @@ def _process_pending_deliveries(world, current_time: float) -> None:
                 )
             continue
 
-        # Unknown kind; drop
     world.pending_deliveries = new_deliveries
+
+
+# -------------------------
+# Market advancement (separate from hourly passive tick)
+# -------------------------
+def _ensure_market_clock(world) -> None:
+    if not hasattr(world, "last_market_tick"):
+        world.last_market_tick = world.sim_time
+    if world.last_market_tick <= 0.0:
+        world.last_market_tick = world.sim_time
+
+
+def _advance_market_to(world, new_time: float) -> None:
+    """
+    Advances the market in fixed dt steps up to new_time.
+    Market only moves during open hours, but we still tick the clock to keep
+    deterministic stepping.
+    """
+    _ensure_market_clock(world)
+    if new_time <= world.last_market_tick:
+        return
+
+    while world.last_market_tick + MARKET_TICK_SECONDS <= new_time:
+        world.last_market_tick += MARKET_TICK_SECONDS
+        _process_market_queues(world, sim_time=world.last_market_tick)
+        _update_market_price(world, sim_time=world.last_market_tick, dt_seconds=MARKET_TICK_SECONDS)
 
 
 def run_tick(world) -> bool:
@@ -210,12 +233,12 @@ def run_tick(world) -> bool:
 
         if agent.busy_until > world.sim_time:
             world.sim_time = agent.busy_until
+            _advance_market_to(world, world.sim_time)
 
         while world.sim_time - world.last_passive >= PASSIVE_TICK_SECONDS:
             world.last_passive += PASSIVE_TICK_SECONDS
 
-            _process_market_queues(world)
-            _update_market_price(world)
+            _advance_market_to(world, world.last_passive)
             _update_weather(world)
             _restock_if_needed(world)
             _apply_midnight_taxes(world)
@@ -231,7 +254,6 @@ def run_tick(world) -> bool:
                 _ensure_agent_schema(a)
                 _refresh_agent_activity(a, world.last_passive)
 
-            # Process deliveries after passive updates potentially end sleep/tasks
             _process_pending_deliveries(world, world.last_passive)
 
         alive_agents = [a for a in world.agents.values() if a.alive]
@@ -247,10 +269,8 @@ def run_tick(world) -> bool:
     _refresh_agent_activity(agent, world.sim_time)
     try_auto_collect_loot(agent, world)
 
-    # Process deliveries at current time too (event-driven)
     _process_pending_deliveries(world, world.sim_time)
 
-    # Notification drip: peek first (do not mutate until context check passes)
     shown_lines, remaining_count = _peek_notifications_for_prompt(agent, max_count=12, max_chars=1800)
     notifications_text = "\n".join(shown_lines).strip()
     if remaining_count > 0:
@@ -284,7 +304,6 @@ def run_tick(world) -> bool:
         )
         return True
 
-    # Now that context check passed, actually consume shown notifications
     _consume_notifications(agent, len(shown_lines))
 
     pre_state = snapshot_agent(agent)
@@ -372,8 +391,9 @@ def _refresh_agent_activity(agent, current_time: float) -> None:
         agent.current_activity = "idle"
 
 
-def _process_market_queues(world) -> None:
-    if not is_market_open(world.last_passive):
+def _process_market_queues(world, sim_time: float) -> None:
+    # Market and order execution only during open hours.
+    if not is_market_open(sim_time):
         return
 
     for agent in world.agents.values():
@@ -394,7 +414,7 @@ def _process_market_queues(world) -> None:
                     agent.last_known_price = (old_cost_basis + cost) / agent.shares_owned
                     world.net_volume_this_period += shares
                     agent.pending_notifications.append(
-                        f"MARKET: Queued buy executed at ${world.market_price:.2f} for {shares} share(s)."
+                        f"MARKET: Queued buy executed at ${world.market_price:.4f} for {shares} share(s)."
                     )
                 else:
                     agent.pending_notifications.append("MARKET: Queued buy failed. Insufficient funds.")
@@ -408,7 +428,7 @@ def _process_market_queues(world) -> None:
                         agent.last_known_price = 0.0
                     world.net_volume_this_period -= shares
                     agent.pending_notifications.append(
-                        f"MARKET: Queued sell executed at ${world.market_price:.2f} for {shares} share(s)."
+                        f"MARKET: Queued sell executed at ${world.market_price:.4f} for {shares} share(s)."
                     )
                 else:
                     agent.pending_notifications.append("MARKET: Queued sell failed. Insufficient shares.")
@@ -416,23 +436,34 @@ def _process_market_queues(world) -> None:
         agent.pending_market_orders.clear()
 
 
-def _update_market_price(world) -> None:
+def _update_market_price(world, sim_time: float, dt_seconds: float) -> None:
     p = world.market_price
     if not isinstance(p, (int, float)) or not math.isfinite(p) or p <= 0:
         world.market_price = 100.0
 
-    if is_market_open(world.last_passive):
+    # Price only moves during open hours (your choice A).
+    if is_market_open(sim_time):
+        dt_hours = float(dt_seconds) / 3600.0
         shock = np.random.normal()
-        gbm_multiplier = math.exp((STOCK_MU - 0.5 * (STOCK_SIGMA ** 2)) + STOCK_SIGMA * shock)
+        gbm_multiplier = math.exp(
+            (STOCK_MU - 0.5 * (STOCK_SIGMA ** 2)) * dt_hours
+            + STOCK_SIGMA * math.sqrt(dt_hours) * shock
+        )
+
+        # Optional jump shock (news)
+        if random.random() < (JUMP_PROB_PER_HOUR * dt_hours):
+            j = np.random.normal(0.0, JUMP_SIGMA)
+            gbm_multiplier *= math.exp(j)
 
         impact_multiplier = 1.0 + (IMPACT_FACTOR * world.net_volume_this_period)
-        impact_multiplier = min(1.15, max(0.85, impact_multiplier))
+        impact_multiplier = min(IMPACT_CLAMP_HI, max(IMPACT_CLAMP_LO, impact_multiplier))
 
         new_price = world.market_price * gbm_multiplier * impact_multiplier
         world.market_price = max(10.0, min(1000.0, round(new_price, 4)))
 
-    world.price_history.append(round(world.market_price, 2))
-    if len(world.price_history) > 168:
+    # Store higher-resolution history; cap to ~7 days at 5-min ticks: 7*24*12 = 2016
+    world.price_history.append(round(world.market_price, 4))
+    if len(world.price_history) > 2016:
         world.price_history.pop(0)
 
     world.net_volume_this_period = 0

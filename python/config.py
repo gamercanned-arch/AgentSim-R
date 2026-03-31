@@ -20,10 +20,28 @@ TOOLS_PATH = os.path.join(BASE_DIR, "tools.json")
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(CACHE_DIR, exist_ok=True)
 
+# -------------------------
 # Market model
+# -------------------------
+# IMPORTANT: STOCK_MU and STOCK_SIGMA are interpreted as per-HOUR parameters.
+# The market is advanced in smaller dt steps (MARKET_TICK_SECONDS) and the
+# GBM update scales correctly with dt.
+
+# Wild baseline volatility (per hour)
 STOCK_MU = 0.0005
-STOCK_SIGMA = 0.015
-IMPACT_FACTOR = 0.00005
+STOCK_SIGMA = 0.10
+
+# Separate market tick frequency (do NOT tie this to PASSIVE_TICK_SECONDS)
+MARKET_TICK_SECONDS = 300.0  # 5 minutes
+
+# Optional jump shocks (news-like sudden moves); probability is per hour.
+JUMP_PROB_PER_HOUR = 0.06
+JUMP_SIGMA = 0.20
+
+# Impact from agent trading volume
+IMPACT_FACTOR = 0.00015
+IMPACT_CLAMP_LO = 0.70
+IMPACT_CLAMP_HI = 1.30
 
 CHARS_PER_TOKEN = 4
 CONTEXT_FILL_RATIO = 0.90

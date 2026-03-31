@@ -74,6 +74,7 @@ def main():
 
     world.sim_time = 8 * 3600
     world.last_passive = world.sim_time
+    world.last_market_tick = world.sim_time
 
     names = ["Alex", "Jamie", "Taylor", "Jordan", "Mia", "Ethan"]
     ages = [28, 35, 21, 39, 41, 30]
