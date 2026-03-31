@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-from typing import Tuple
-
-from config import MAX_INVENTORY
-from locations import get_current_location_def
+from tooling.helpers import canonicalize_item_name, has_item_index
 from tooling.catalogs import HOBBY_ITEMS
-from tooling.helpers import canonicalize_item_name, has_item_index, store_currently_holding_if_possible
 
 
 def handle_sleep(agent, world, args: dict):
@@ -16,6 +12,8 @@ def handle_sleep(agent, world, args: dict):
 
     hours = max(1.0, min(12.0, hours))
     time_cost = int(hours * 3600)
+
+    from locations import get_current_location_def
 
     loc_def = get_current_location_def(agent.x, agent.y, agent.z)
     is_home = bool(loc_def and loc_def.name == agent.home_location)
@@ -32,7 +30,11 @@ def handle_sleep(agent, world, args: dict):
         agent.energy = max(agent.energy, min(60.0, agent.energy + energy_gain))
 
     agent.stress = max(0.0, agent.stress - (hours * 2.0))
-    msg = f"Slept {hours:.1f}h. Energy: {agent.energy:.1f}. Do Not Disturb active."
+
+    msg = (
+        f"Sleep started for {hours:.1f}h. You will be unavailable (DND) until you wake. "
+        f"Energy: {agent.energy:.1f}."
+    )
     if not is_home:
         msg += " (Poor sleep outside home: recovery capped at 60%)."
     return msg, True, time_cost

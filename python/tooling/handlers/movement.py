@@ -132,7 +132,6 @@ def handle_move_to(agent, world, args: dict):
     speed = walk_speed_mps
     energy_per_m = walk_energy_per_m
     fuel_cost = 0.0
-    extra_note = ""
 
     v_dist = _distance_to_vehicle(agent)
     can_use_vehicle = v_dist <= VEHICLE_BOARD_MAX_DISTANCE
@@ -147,13 +146,18 @@ def handle_move_to(agent, world, args: dict):
         if agent.money >= fuel_cost:
             mode = "vehicle"
         else:
+            # Move fuel fallback note into notification (not tool result string)
+            agent.pending_notifications.append(
+                f"Movement: Walked instead of riding because you could not afford fuel (${fuel_cost:.2f})."
+            )
             speed = walk_speed_mps
             energy_per_m = walk_energy_per_m
             fuel_cost = 0.0
             mode = "walk"
-            extra_note = " (Walked because you could not afford fuel.)"
     else:
-        extra_note = f" (Walked because your vehicle is {v_dist:.0f}m away.)"
+        agent.pending_notifications.append(
+            f"Movement: Walked because your vehicle is {v_dist:.0f}m away."
+        )
 
     time_cost = max(60, int(dist_m / max(0.5, speed)))
     energy_drain = dist_m * energy_per_m
@@ -172,6 +176,7 @@ def handle_move_to(agent, world, args: dict):
     agent.current_activity = "moving"
 
     if mode == "vehicle":
+        agent.vehicle_x, agent.vehicle_y, agent.vehicle_z = agent.x, agent.agent_y if False else agent.y, agent.z  # keep stable
         agent.vehicle_x, agent.vehicle_y, agent.vehicle_z = agent.x, agent.y, agent.z
 
     dx = entrance_xyz[0] - outside_xyz[0]
@@ -199,7 +204,7 @@ def handle_move_to(agent, world, args: dict):
 
     return (
         f"Travelled to entrance area of {label} by {mode} ({dist_m:.0f}m; {cost_hint}). "
-        f"Door is ~{door_dist:.0f}m {direction} of you.{status_hint}{extra_note}",
+        f"Door is ~{door_dist:.0f}m {direction} of you.{status_hint}",
         True,
         time_cost,
     )

@@ -1,6 +1,7 @@
 import hashlib
 import math
 import random
+import uuid
 
 import numpy as np
 
@@ -9,6 +10,7 @@ from config import (
     CONTEXT_FILL_RATIO,
     CONTEXT_SIZE,
     IMPACT_FACTOR,
+    MAX_INVENTORY,
     MAX_NEW_TOKENS,
     PASSIVE_TICK_SECONDS,
     STOCK_MU,
@@ -48,9 +50,153 @@ def _ensure_agent_schema(agent) -> None:
     if not hasattr(agent, "active_task_entities") or agent.active_task_entities is None:
         agent.active_task_entities = {}
 
+    if not hasattr(agent, "voicemail_inbox") or agent.voicemail_inbox is None:
+        agent.voicemail_inbox = []
+
 
 def _sha16(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+
+def _peek_notifications_for_prompt(agent, max_count: int = 12, max_chars: int = 1800) -> tuple[list[str], int]:
+    """
+    Return (shown_lines, remaining_count) without mutating pending_notifications.
+    """
+    pending = list(getattr(agent, "pending_notifications", []) or [])
+    shown = []
+    total = 0
+    for n in pending:
+        if len(shown) >= max_count:
+            break
+        n = str(n)
+        if total + len(n) + 1 > max_chars and shown:
+            break
+        shown.append(n)
+        total += len(n) + 1
+    remaining = max(0, len(pending) - len(shown))
+    return shown, remaining
+
+
+def _consume_notifications(agent, count: int) -> None:
+    if not hasattr(agent, "pending_notifications") or agent.pending_notifications is None:
+        agent.pending_notifications = []
+    if count <= 0:
+        return
+    del agent.pending_notifications[:count]
+
+
+def _drop_ground_item(world, x: float, y: float, z: float, item_data: dict, dropper_id: int | None = None) -> None:
+    if not hasattr(world, "ground_items") or world.ground_items is None:
+        world.ground_items = []
+    world.ground_items.append(
+        {
+            "id": str(uuid.uuid4()),
+            "item": item_data.get("item", "Unknown"),
+            "durability": item_data.get("durability", 5),
+            "bought": item_data.get("bought", world.sim_time),
+            "x": float(x),
+            "y": float(y),
+            "z": float(z),
+            "dropper_id": int(dropper_id) if dropper_id is not None else -1,
+            "repickup_block_until": float(world.sim_time),
+        }
+    )
+
+
+def _process_pending_deliveries(world, current_time: float) -> None:
+    deliveries = getattr(world, "pending_deliveries", None) or []
+    if not deliveries:
+        return
+
+    new_deliveries = []
+    for d in deliveries:
+        kind = d.get("kind")
+        from_id = d.get("from_id")
+        to_id = d.get("to_id")
+        sender = world.agents.get(from_id) if isinstance(from_id, int) else None
+        target = world.agents.get(to_id) if isinstance(to_id, int) else None
+
+        # If target missing or dead: refund to sender if possible; otherwise drop/lose.
+        if not target or not target.alive:
+            if kind == "money":
+                amt = float(d.get("amount", 0.0))
+                if sender and sender.alive:
+                    sender.money += amt
+                    sender.pending_notifications.append(
+                        f"Queued transfer to {d.get('to_id')} cancelled (recipient unavailable). Refunded ${amt:.2f}."
+                    )
+            elif kind == "item":
+                item = d.get("item", None)
+                if sender and sender.alive and isinstance(item, dict):
+                    if len(sender.inventory) < MAX_INVENTORY:
+                        sender.inventory.append(item)
+                        sender.pending_notifications.append(
+                            "Queued item delivery cancelled (recipient unavailable). Item returned to you."
+                        )
+                    else:
+                        _drop_ground_item(world, sender.x, sender.y, sender.z, item, dropper_id=sender.id)
+                        sender.pending_notifications.append(
+                            "Queued item delivery cancelled (recipient unavailable). Your inventory was full, so the item was dropped on the ground at your feet."
+                        )
+            continue
+
+        # Wait until target is available (not sleeping, not mid-task, not time-busy).
+        if target.is_sleeping or target.task_state != "idle" or float(target.busy_until) > float(current_time):
+            new_deliveries.append(d)
+            continue
+
+        if kind == "money":
+            amt = float(d.get("amount", 0.0))
+            target.money += amt
+            target.pending_notifications.append(f"Received queued money transfer: ${amt:.2f}.")
+            if sender and sender.alive:
+                sender.pending_notifications.append(f"Queued money transfer delivered to {target.name}: ${amt:.2f}.")
+            continue
+
+        if kind == "item":
+            item = d.get("item", None)
+            if not isinstance(item, dict):
+                continue
+
+            if len(target.inventory) >= MAX_INVENTORY:
+                # Cancel delivery and return to sender
+                if sender and sender.alive:
+                    if len(sender.inventory) < MAX_INVENTORY:
+                        sender.inventory.append(item)
+                        sender.pending_notifications.append(
+                            f"Queued item delivery to {target.name} failed (their inventory was full). Item returned to you."
+                        )
+                        target.pending_notifications.append(
+                            f"A queued item delivery from {sender.name} was cancelled because your inventory was full."
+                        )
+                    else:
+                        _drop_ground_item(world, sender.x, sender.y, sender.z, item, dropper_id=sender.id)
+                        sender.pending_notifications.append(
+                            f"Queued item delivery to {target.name} failed (their inventory was full). Your inventory was also full, so the item was dropped on the ground at your feet."
+                        )
+                        target.pending_notifications.append(
+                            f"A queued item delivery from {sender.name} was cancelled because your inventory was full."
+                        )
+                else:
+                    # Sender unavailable; drop at recipient.
+                    _drop_ground_item(world, target.x, target.y, target.z, item, dropper_id=-1)
+                    target.pending_notifications.append(
+                        "A queued item delivery could not be returned to the sender. It was dropped on the ground near you."
+                    )
+                continue
+
+            target.inventory.append(item)
+            target.pending_notifications.append(
+                f"Received queued item delivery: {item.get('item', 'Unknown')}."
+            )
+            if sender and sender.alive:
+                sender.pending_notifications.append(
+                    f"Queued item delivery delivered to {target.name}: {item.get('item', 'Unknown')}."
+                )
+            continue
+
+        # Unknown kind; drop
+    world.pending_deliveries = new_deliveries
 
 
 def run_tick(world) -> bool:
@@ -85,6 +231,9 @@ def run_tick(world) -> bool:
                 _ensure_agent_schema(a)
                 _refresh_agent_activity(a, world.last_passive)
 
+            # Process deliveries after passive updates potentially end sleep/tasks
+            _process_pending_deliveries(world, world.last_passive)
+
         alive_agents = [a for a in world.agents.values() if a.alive]
         if not alive_agents:
             return False
@@ -98,8 +247,16 @@ def run_tick(world) -> bool:
     _refresh_agent_activity(agent, world.sim_time)
     try_auto_collect_loot(agent, world)
 
-    notifications = "\n".join(agent.pending_notifications)
-    msgs = build_messages(agent.id, world, notifications)
+    # Process deliveries at current time too (event-driven)
+    _process_pending_deliveries(world, world.sim_time)
+
+    # Notification drip: peek first (do not mutate until context check passes)
+    shown_lines, remaining_count = _peek_notifications_for_prompt(agent, max_count=12, max_chars=1800)
+    notifications_text = "\n".join(shown_lines).strip()
+    if remaining_count > 0:
+        notifications_text = (notifications_text + "\n" if notifications_text else "") + f"(Queued notifications remaining: {remaining_count})"
+
+    msgs = build_messages(agent.id, world, notifications_text)
 
     prompt_text = render_prompt(msgs)
     prompt_hash = _sha16(prompt_text)
@@ -127,6 +284,9 @@ def run_tick(world) -> bool:
         )
         return True
 
+    # Now that context check passed, actually consume shown notifications
+    _consume_notifications(agent, len(shown_lines))
+
     pre_state = snapshot_agent(agent)
 
     gen, prompt_tokens, gen_tokens = call_server(msgs, agent.id, prompt_text=prompt_text)
@@ -140,7 +300,6 @@ def run_tick(world) -> bool:
         raise RuntimeError(gen)
 
     agent.total_prompt_tokens += int(prompt_tokens)
-    agent.pending_notifications.clear()
     agent.chat_history.append({"role": "assistant", "content": gen})
 
     parsed_tool, parsed_args = parse_tool_call(gen)
@@ -162,7 +321,7 @@ def run_tick(world) -> bool:
         log_turn(
             agent=agent,
             sim_time=world.sim_time,
-            notifications=notifications,
+            notifications=notifications_text,
             messages=msgs,
             raw_output=gen,
             parsed_tool=parsed_tool,
@@ -174,12 +333,14 @@ def run_tick(world) -> bool:
             post_state=post_state,
             prompt_hash=prompt_hash,
             prompt_chars=prompt_chars,
+            notifications_shown=shown_lines,
+            notifications_remaining=remaining_count,
         )
     except TypeError:
         log_turn(
             agent=agent,
             sim_time=world.sim_time,
-            notifications=notifications,
+            notifications=notifications_text,
             messages=msgs,
             raw_output=gen,
             parsed_tool=parsed_tool,

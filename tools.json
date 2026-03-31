@@ -2,7 +2,7 @@
   "tools": [
     {
       "name": "talk_to",
-      "description": "Talk to someone in person within 50m. Others nearby may overhear if they are awake and available.",
+      "description": "Talk to someone in person within 50m. Others nearby may overhear if they are awake and available. If they are busy or sleeping, you cannot talk right now, but they will receive a missed-interaction notification.",
       "params": ["person", "message"]
     },
     {
@@ -42,7 +42,7 @@
     },
     {
       "name": "call_person",
-      "description": "Call someone by phone. No proximity required, but it fails if they are busy or sleeping.",
+      "description": "Call someone by phone. No proximity required. If they are busy or sleeping, the call goes to voicemail and they will receive it later.",
       "params": ["person", "message"]
     },
     {
@@ -52,12 +52,12 @@
     },
     {
       "name": "change_status",
-      "description": "Update your beliefs/goals, or request/accept a relationship status change with a nearby person.",
+      "description": "Update your beliefs/goals, or request/accept a relationship status change with a nearby person. If they are busy or sleeping, the request is queued for them to see later.",
       "params": ["person", "type", "value"]
     },
     {
       "name": "attack_person",
-      "description": "Attack another person within 20m. Fails if they are busy or sleeping.",
+      "description": "Attack another person within 20m. If the target is sleeping, the attack succeeds (they may wake). If the target is in a work/study task, the task is interrupted and the attack proceeds. If the target is busy for other reasons, the attack fails.",
       "params": ["person"]
     },
     {
@@ -82,12 +82,12 @@
     },
     {
       "name": "give_item",
-      "description": "Give an item from your hand or inventory to someone within 20m. Fails if they are busy.",
+      "description": "Give an item from your hand or inventory to someone within 20m. If they are busy or sleeping, the delivery is queued and will be delivered when they are available. The item is escrowed immediately.",
       "params": ["person", "item"]
     },
     {
       "name": "give_money",
-      "description": "Transfer money to someone within 20m. Fails if they are busy or sleeping.",
+      "description": "Transfer money to someone within 20m. If they are busy or sleeping, the transfer is queued and will be delivered when they are available. The money is escrowed immediately.",
       "params": ["person", "amount"]
     },
     {

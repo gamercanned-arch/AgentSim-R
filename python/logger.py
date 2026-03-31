@@ -81,6 +81,21 @@ def _summarize_messages(messages: list) -> dict:
     }
 
 
+def _extract_system_user(messages: list) -> tuple[str, str]:
+    """
+    Convenience extractor so logs can always contain explicit system/user fields,
+    even when LOG_FULL_MESSAGES=0.
+    """
+    system = ""
+    last_user = ""
+    for m in messages or []:
+        if m.get("role") == "system" and not system:
+            system = m.get("content", "") or ""
+        if m.get("role") == "user":
+            last_user = m.get("content", "") or last_user
+    return system, last_user
+
+
 def snapshot_agent(agent) -> dict:
     return {
         "id": agent.id,
@@ -136,6 +151,7 @@ def snapshot_agent(agent) -> dict:
             round(getattr(agent, "vehicle_z", 0.0), 2),
         ),
         "recent_scenarios": deepcopy(getattr(agent, "recent_scenarios", {})),
+        "voicemail_inbox": deepcopy(getattr(agent, "voicemail_inbox", [])),
     }
 
 
@@ -158,13 +174,21 @@ def log_turn(
     post_state: dict,
     prompt_hash: str = "",
     prompt_chars: int = 0,
+    notifications_shown: list | None = None,
+    notifications_remaining: int = 0,
 ) -> None:
+    system_prompt, user_observation = _extract_system_user(messages)
+
     entry = {
         "event": "turn",
         "agent": agent.name,
         "agent_id": agent.id,
         "sim_time": sim_time,
         "notifications_presented": notifications,
+        "notifications_shown_list": notifications_shown or [],
+        "notifications_remaining_count": int(notifications_remaining),
+        "system_prompt": system_prompt,
+        "user_observation": user_observation,
         "prompt_hash": prompt_hash,
         "prompt_chars": int(prompt_chars) if prompt_chars else 0,
         "raw_model_output": raw_output,
@@ -189,15 +213,26 @@ def log_global(event: dict) -> None:
     _write(os.path.join(LOG_DIR, "global_summary.jsonl"), event)
 
 
-def log_io(agent_name: str, sim_time: float, messages: list, raw_output: str, prompt_hash: str = "", prompt_chars: int = 0) -> None:
+def log_io(
+    agent_name: str,
+    sim_time: float,
+    messages: list,
+    raw_output: str,
+    prompt_hash: str = "",
+    prompt_chars: int = 0,
+) -> None:
     """
     Dataset-like IO logging. Defaults to summarized prompt to avoid huge logs.
     Set LOG_FULL_MESSAGES=1 to store full prompt/messages.
     """
+    system_prompt, user_observation = _extract_system_user(messages)
+
     io_entry = {
         "event": "io",
         "agent": agent_name,
         "sim_time": sim_time,
+        "system_prompt": system_prompt,
+        "user_observation": user_observation,
         "prompt_hash": prompt_hash,
         "prompt_chars": int(prompt_chars) if prompt_chars else 0,
         "output_generated": raw_output,

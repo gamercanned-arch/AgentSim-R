@@ -12,7 +12,6 @@ import jinja2
 from config import (
     CACHE_DIR,
     CHARS_PER_TOKEN,
-    MAX_INVENTORY,
     MAX_NEW_TOKENS,
     PROMPTS_DIR,
     TOOLS_PATH,
@@ -97,7 +96,7 @@ def _build_base_system_prompt(agent) -> str:
         "- Coordinates shown in observations are read-only telemetry. Never pass coordinates into any tool.\n"
         "- For move_to, use only a named public location or a home alias like Home_Taylor. Never use raw coordinates or internal location IDs.\n"
         "- Place, item, and person names are normalized loosely by the engine, so close variants like Startup Sowl or Office FedEx are acceptable.\n"
-        "- move_to travels to the OUTSIDE entrance area for roofed buildings; open-air locations place you directly there.\n"
+        "- move_to travels to the OUTSIDE entrance area; to enter a building, walk into its boundary.\n"
         "- Vehicles: you can ride only if within 100m of your parked vehicle; fuel costs $/km when riding.\n"
         "- If you cannot afford fuel, you walk instead.\n"
         "- pick_item is for nearby dropped ground items, or for the required task prop during an active work or study task.\n"
@@ -283,6 +282,24 @@ def _task_line(agent) -> str:
     return f"Task: {agent.task_state}"
 
 
+def _voicemail_preview(agent, max_show: int = 15) -> str:
+    inbox = getattr(agent, "voicemail_inbox", None) or []
+    if not inbox:
+        return "None"
+    shown = inbox[-max_show:]
+    parts = []
+    for vm in shown:
+        from_name = str(vm.get("from", "Unknown"))
+        t = vm.get("time", None)
+        t_str = get_time_string(float(t), include_weekday=True) if isinstance(t, (int, float)) else "Unknown time"
+        msg = str(vm.get("message", ""))
+        parts.append(f"- From {from_name} at {t_str}: {msg}")
+    extra = ""
+    if len(inbox) > len(shown):
+        extra = f"\n(+{len(inbox) - len(shown)} older voicemails)"
+    return "\n".join(parts) + extra
+
+
 def build_messages(agent_id: int, world, notifications: str) -> List[dict]:
     agent = world.agents[agent_id]
 
@@ -304,6 +321,10 @@ def build_messages(agent_id: int, world, notifications: str) -> List[dict]:
     nearby_doors = _nearest_entrances(agent) if not loc_def else "None"
     nearby_hours = _nearby_location_hours(agent, world.sim_time)
 
+    vm_inbox = getattr(agent, "voicemail_inbox", None) or []
+    vm_count = len(vm_inbox)
+    vm_preview = _voicemail_preview(agent, max_show=15)
+
     user_msg = (
         "Stats:\n"
         f"Date/Time: {get_time_string(world.sim_time)}\n"
@@ -318,14 +339,16 @@ def build_messages(agent_id: int, world, notifications: str) -> List[dict]:
         f"Happiness: {agent.happiness:.0f}%\n"
         f"Current Activity: {agent.current_activity}\n"
         f"Held Item: {held}\n"
-        f"Inv Count: {len(agent.inventory)}/{MAX_INVENTORY}\n"
+        f"Inv Count: {len(agent.inventory)}\n"
         f"Food/Drink Owned: {_owned_food_and_drinks(agent)}\n"
         f"Nearby People: {nearby_people}\n"
         f"Visible Objects: {visible_objs}\n"
         f"Nearby Doors (if outside): {nearby_doors}\n"
         f"Nearby Locations/Hrs: {nearby_hours}\n"
         f"Vehicle: {_vehicle_line(agent)}\n"
-        f"Stock Market: {market_status}, ${world.market_price:.2f}, stocks owned: {agent.shares_owned}\n"
+        f"Market line: {market_status}, ${world.market_price:.2f}, stocks owned: {agent.shares_owned}\n"
+        f"Voicemail Inbox: {vm_count} message(s)\n"
+        f"Voicemails (most recent):\n{vm_preview}\n"
         f"{_task_line(agent)}\n"
         f"Last Result: {agent.last_action_result}\n"
         f"Notifications: {notif_str}\n"

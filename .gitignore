@@ -8,3 +8,5 @@ dir.py
 codebase.txt
 extract_t1.py
 prompt.log
+model_patch.txt
+path.py
