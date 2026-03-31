@@ -187,9 +187,9 @@ Let:
 - \(d_{head}\) be distance from destination road node to destination point
 
 Then route distance is:
-\[
+$$
 d = d_{tail} + d_{grid} + d_{head}
-\]
+$$
 
 Implemented in `python/tooling/navigation.py`.
 
@@ -247,51 +247,51 @@ Passive updates occur once per simulated hour (`PASSIVE_TICK_SECONDS = 3600`).
 
 ### 10.1 Happiness model
 Relationships are scaled:
-\[
+$$
 R_{scaled} = \min\left(100,\; \frac{\text{relationships}}{5}\cdot 100\right)
-\]
+$$
 
 Happiness target:
-\[
+$$
 H^* = 0.3\cdot \text{health} \;+\; 0.3\cdot R_{scaled} \;+\; 0.4\cdot 100 \cdot \tanh\!\left(\frac{\text{money}}{\text{expenses} + \varepsilon}\right)
-\]
+$$
 with \(\varepsilon = 1\).
 
 Update:
-\[
+$$
 \text{happiness}_{t+1} = \mathrm{clamp}_{0,100}\Big(0.7\cdot \text{happiness}_t + 0.3\cdot H^*\Big)
-\]
+$$
 
 ### 10.2 Stress model
 Relationship tension components:
-\[
+$$
 \text{loneliness} = \max(0, 3-\text{relationships})^2
-\]
-\[
+$$
+$$
 \text{crowding} = \max(0, \text{relationships}-10)\cdot 2
-\]
-\[
+$$
+$$
 \text{rel\_tension} = w_1(\text{loneliness}+\text{crowding})
-\]
+$$
 where \(w_1=1\).
 
 Financial pressure:
-\[
+$$
 \text{fin\_pressure} = w_2 \cdot \frac{\text{expenses}}{\max(0,\text{money}) + 1}
-\]
+$$
 where \(w_2=2\).
 
 Market anxiety (only when shares owned and price drops):
-\[
+$$
 \text{market\_anxiety} \propto w_3 \cdot |\Delta P| \cdot \frac{\text{position\_value}}{\max(0,\text{money})+1}
-\]
+$$
 with \(w_3=0.5\).
 
 Base stress target:
-\[
+$$
 \Psi^* = \frac{\text{rel\_tension} + \text{fin\_pressure} + \text{market\_anxiety}}
 {1 + \alpha\cdot \text{happiness} + \beta\cdot \text{hourly\_wage}}
-\]
+$$
 where \(\alpha=0.01,\; \beta=0.001\).
 
 Hydration scaling:
@@ -302,52 +302,52 @@ Debt penalty:
 - if money < 0: multiply by 1.5
 
 Update:
-\[
+$$
 \text{stress}_{t+1} = \mathrm{clamp}_{0,100}\Big(0.7\cdot \text{stress}_t + 0.3\cdot \Psi^*\cdot \text{debt\_penalty}\Big)
-\]
+$$
 
 ### 10.3 Health model
 Age factor:
-\[
+$$
 A = e^{0.02\cdot \text{age}}
-\]
+$$
 
 Energy penalty:
 - 0 if energy > 10
 - 0.5 otherwise
 
 Dehydration penalty:
-\[
+$$
 D =
 \begin{cases}
 (20-\text{hydration})\cdot 0.2 & \text{if hydration}<20 \\
 0 & \text{otherwise}
 \end{cases}
-\]
+$$
 
 Health delta:
-\[
+$$
 \Delta \text{health} =
 \Big(
 -\big(0.5\cdot \text{stress} + 0.3\cdot \text{hunger} + 10\cdot \text{energy\_penalty} + D\big)
 + 0.1\cdot \text{happiness}
 \Big)\cdot A \cdot 0.02
-\]
+$$
 
 Update:
-\[
+$$
 \text{health}_{t+1} = \mathrm{clamp}_{0,100}(\text{health}_t + \Delta\text{health})
-\]
+$$
 
 Starvation damage (if hunger = 100 for consecutive hours):
-\[
+$$
 \text{health} \leftarrow \text{health} - \min(32,\; 2^{h})
-\]
+$$
 
 Dehydration damage (if hydration = 0 for consecutive hours):
-\[
+$$
 \text{health} \leftarrow \text{health} - \min(16,\; 1.5^{d})
-\]
+$$
 
 If health ≤ 0: agent dies and becomes a lootable estate.
 
@@ -388,9 +388,9 @@ Work and study duration is capped:
 - **1 to 10 hours**
 
 ### Pay model (work)
-\[
+$$
 \text{pay} = \text{hourly\_wage} \cdot \text{hours} \cdot \frac{\text{market\_price}}{100}
-\]
+$$
 Half pay if incorrect.
 
 ### Education model
@@ -410,9 +410,9 @@ Market open:
 - Mon–Fri 09:30–16:00
 
 Price updates hourly during open hours:
-\[
+$$
 P_{t+1} = P_t \cdot \exp\Big((\mu-\tfrac{1}{2}\sigma^2) + \sigma \epsilon_t\Big)\cdot \text{impact}
-\]
+$$
 
 Impact is based on net volume that hour; invalid prices reset to 100 and prices are clamped.
 
