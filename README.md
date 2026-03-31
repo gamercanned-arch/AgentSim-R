@@ -5,7 +5,7 @@ AgentSim-R is a synthetic “imaginary world” simulation of multiple LLM-drive
 This is not freeform roleplay. Agents must choose **one concrete action per turn** via tool calls, and the environment enforces hard constraints.
 
 > [!NOTE]
-> **Summary**: This project aims to observe *emergent behavior* when multiple LLM agents interact with a shared environment under enforceable constraints (movement, money, needs, schedules, and tool contracts). It is designed to be research-auditable rather than “creative RP”.
+> **Summary**: This project is aimed at observing *emergent behavior* when multiple agents interact in a shared environment with enforceable rules. It is designed to be research-auditable and grounded, not “creative RP”.
 
 ---
 
@@ -22,7 +22,12 @@ llama-server -m /path/to/model.gguf -c 262144 --parallel 1 --slot-save-path ./ca
 Key points:
 - Context is configured for large windows (`CONTEXT_SIZE=262144` in `python/config.py`).
 - **Per-agent slot save/restore** is enabled using `cache/agent_{id}.bin`.
-- Generation settings are set in `python/prompting.py` (`temperature`, `top_p`, `repeat_penalty`, etc.).
+- Generation settings are configured in `python/prompting.py` (`temperature`, `top_p`, `repeat_penalty`, etc.).
+
+### Install
+```bash
+pip install -r requirements.txt
+```
 
 ### Run
 From repo root:
@@ -31,12 +36,12 @@ python python/sim.py
 ```
 
 ### Prompt extraction / debugging
-To dump the full rendered prompt for every starting agent:
+To dump the fully rendered prompt for each starting agent:
 ```bash
 python extract_t1.py
 ```
 
-This writes all prompts to:
+This writes to:
 ```bash
 prompt.log
 ```
@@ -61,29 +66,24 @@ value
 </tool_call>
 ```
 
-No text is allowed after `</tool_call>`.
+**No text is allowed after `</tool_call>`.**
 
 Tool schemas are described in `tools.json` and enforced by the engine.
 
 Important contract notes:
 - `move_to` accepts **named places only**, such as `Library`, `Store_A`, `Startup_Sowl`, or `Home_Taylor`.
 - Coordinates shown in observations are **read-only telemetry** and are never valid tool inputs.
-- The engine tolerates **loose normalized names**, so inputs like `Startup Sowl` or `Office FedEx` are accepted and canonicalized.
-- `pick_item` is for:
-  - picking up a nearby dropped ground item, or
-  - picking up the required task prop during an active work/study task
-- `hold_item` is for:
-  - moving an inventory item into your hand, or
-  - storing your held item back into inventory with values like `store`, `none`, `unequip`, or `put away`
-- Corpse estate loot is **automatic** when an agent gets close enough; agents do not manually loot corpses item-by-item.
+- The engine tolerates loose name variants, e.g. `Startup Sowl` → `Startup_Sowl`.
+- Roofed-building rule: `move_to(place=...)` takes you to the **outside entrance area**; use `walk` to enter.
+- Corpse estate loot is automatic when close enough; do not manually loot item-by-item.
 
 ---
 
 ## 3) Determinism note (research honesty)
 
-- The Python simulation logic is largely deterministic given a fixed seed (movement graph, passive updates, scenario selection constraints, etc.).
+- The simulation logic is largely deterministic given a fixed seed (movement graph, passive updates, scenario selection constraints, etc.).
 - **Overall runs are not guaranteed deterministic** because LLM sampling depends on inference server behavior and generation randomness unless your server is configured to be fully deterministic.
-- If the `llama-server` slot/KV cache is invalidated, agents do **not** lose their simulation memory, because the source of truth is still the Python-side prompt state (`system_prompt`, `chat_history`, and current world state). Cache loss mainly affects speed and recomputation cost.
+- Slot/KV cache loss does **not** erase simulation memory; the source of truth is still Python-side prompt state (`system_prompt`, `chat_history`, and current world state). Cache loss mainly affects speed.
 
 ---
 
@@ -91,71 +91,47 @@ Important contract notes:
 
 Stable import paths + modular internals:
 
-- `python/tools.py`: facade re-exporting tool execution + catalogs from modular code
+- `python/tools.py`: facade re-exporting tool execution + catalogs
 - `python/utils.py`: facade re-exporting prompting + server call functions
-- `python/prompting.py`: observation prompt builder + llama-server request + slot save/restore
+- `python/prompting.py`: compact observation prompt builder + llama-server call + slot save/restore
 - `python/core.py`: time/date utilities + market-hours logic
 
 Tool engine:
 - `python/tooling/execute.py`: dispatcher + registry
 - `python/tooling/parsing.py`: XML tool-call parser
 - `python/tooling/catalogs.py`: item + vehicle catalogs + workplace mappings
-- `python/tooling/navigation.py`: shortest-route distance (A* on coarse road grid)
+- `python/tooling/navigation.py`: shortest-route distance on a coarse road grid (A*)
 - `python/tooling/scenarios.py`: scenario pools with recency control
 - `python/tooling/helpers.py`: canonicalization, reachability, busy checks, etc.
 - `python/tooling/death.py`: death/estate logic
-- `python/tooling/handlers/*.py`: handlers grouped by domain
+- `python/tooling/handlers/*.py`: domain handlers
 
 ---
 
 ## 5) World model (imaginary world, hardcoded boundaries)
 
-The village is represented as a continuous coordinate plane (`0..5000m` on both axes), with hardcoded 3D location boxes (buildings, parks, outdoor spaces, homes, and interactables).
+The village is a continuous coordinate plane (`0..5000m` on both x and y), with hardcoded 3D location boxes (buildings, parks, outdoor spaces, homes, and interactables).
 
 Primary files:
 - Locations + bounding boxes: `python/locations.py`
-- Each location also has an **entrance point**
-- Agents can be “Outside” or inside a location box
+- Each location has an entrance point
+- Agents are either “Outside” or inside a location box
 
-Public world locations currently include:
-- `Hospital`
-- `School`
-- `Office_FedEx`
-- `Startup_Sowl`
-- `Store_A`
-- `Store_B`
-- `Market`
-- `Park_Central`
-- `Cafe`
-- `Library`
-- `Gym`
-- `Village_Square`
-- `Farm`
-- `Mall`
-- `Lake`
-- `Vehicle_Dealership`
-
-### Roofed-building outside-door rule
-For **roofed buildings**, `move_to(place=...)` moves to the **outside entrance area**, not directly inside.
-
-To enter a roofed building:
-- use `walk` until you cross into the building’s boundary
-
-### Open-air locations
-For **open-air locations** (parks, lakes, squares):
-- `move_to` places the agent **directly there**
-- no separate outside-door step
+Public locations include:
+- `Hospital`, `School`, `Office_FedEx`, `Startup_Sowl`
+- `Store_A`, `Store_B`, `Market`
+- `Park_Central`, `Cafe`, `Library`, `Gym`, `Village_Square`
+- `Farm`, `Mall`, `Lake`, `Vehicle_Dealership`
 
 ### Home aliases
-Agents should use friendly home aliases such as:
-- `Home_Alex`
-- `Home_Taylor`
+Agents should use home aliases:
+- `Home_Alex`, `Home_Taylor`, etc.
 
-They should not use internal location IDs like:
+Agents should not use internal location IDs like:
 - `SmallApartment_Maple_Unit_1_Floor_1`
 
 ### Simulation date/time
-The simulation uses a real calendar start date:
+The simulation starts on:
 - **Monday, 30-03-2026 08:00**
 
 Prompts/logs use real date formatting.
@@ -164,39 +140,34 @@ Prompts/logs use real date formatting.
 
 ## 6) Scheduling model (parallel-by-busy_until)
 
-Simulation is event-driven:
-- each agent has `busy_until`
-- the scheduler always picks the next available agent (smallest `busy_until`)
-- passive “hourly ticks” are applied whenever simulated time advances
+The simulation is event-driven:
+- each agent has a `busy_until` timestamp
+- the scheduler always picks the next available agent
+- passive “hourly ticks” apply when simulated time advances
 
 This approximates parallel action: one agent can be busy for hours while others continue acting.
 
 ---
 
-## 7) Movement + pathing (shortest-route distance)
+## 7) Movement + pathing (Python DSA, shortest-route)
 
-Movement distance is computed using an infrastructure-aware approximation:
+Movement distance is computed with an infrastructure-aware approximation:
 - a coarse road grid over the `5km × 5km` plane
 - shortest path via **A\*** on a 4-neighbor grid
-- connector distance from true coordinates to nearest road nodes
+- connector distance from real coordinates to nearest road nodes
 
 Let:
 - grid spacing be \( s = 250 \) meters
 - \(d_{tail}\) be distance from start to nearest road node
-- \(d_{grid}\) be A\* shortest path length on the road grid
+- \(d_{grid}\) be A\* path length on the road grid
 - \(d_{head}\) be distance from destination road node to destination point
 
-Then route distance is:
+Then:
 $$
 d = d_{tail} + d_{grid} + d_{head}
 $$
 
 Implemented in `python/tooling/navigation.py`.
-
-### Coordinate rule
-Coordinates are shown to agents for awareness and realism, but:
-- they are **not valid action parameters**
-- `move_to` must use **named places only**
 
 ---
 
@@ -205,20 +176,18 @@ Coordinates are shown to agents for awareness and realism, but:
 Agents have a **vehicle asset** (default: Scooter). Vehicles are not inventory items.
 
 Rules:
-- An agent can ride only if within **100m** of their parked vehicle
-- Riding has:
-  - time cost based on route distance and vehicle speed
-  - fuel cost based on route distance in km
-  - small energy cost
-- If an agent cannot afford fuel, movement falls back to walking (with a notification)
+- ride only if within **100m** of the parked vehicle
+- time cost depends on vehicle speed and route distance
+- fuel cost is simplified as **$ per km**
+- if fuel is unaffordable, movement falls back to walking (a notification is generated)
 
 Vehicle parameters live in `python/tooling/catalogs.py`.
 
 ---
 
-## 9) Core state variables
+## 9) Core state variables (bounded)
 
-Each agent maintains explicit numeric state (bounded):
+Key numeric state (bounded unless noted):
 - `health` ∈ [0, 100]
 - `energy` ∈ [0, 100]
 - `hydration` ∈ [0, 100]
@@ -227,42 +196,48 @@ Each agent maintains explicit numeric state (bounded):
 - `happiness` ∈ [0, 100]
 - `education` ∈ [0, 100]
 - `relationships` ∈ [0, 25]
-- plus money, wage, inventory, holdings, vehicle state, pending tasks, queued orders, voicemail, etc.
+- `money` (float; can go negative in some scenarios)
+- `hourly_wage`, `expenses`, `inventory`, `held item`, etc.
 
-Prompts surface a compact but useful subset, including:
-- real date/time
-- health/hunger/energy/hydration/stress/happiness
-- nearby people, visible objects
-- nearby location open/closed status
-- active task details
-- inventory count
-- voicemail preview
+The prompt surfaces a compact subset including:
+- time/date
+- location + “inside/outside”
+- needs + money
+- nearby people + visible objects
+- nearby open/closed info
+- task instructions (if active)
+- voicemail summary
 - notifications (drip-fed)
 
 ---
 
 ## 10) Passive dynamics (math models)
 
-Passive updates occur once per simulated hour (`PASSIVE_TICK_SECONDS = 3600`).
+Passive updates occur once per simulated hour.
 
 ### 10.1 Happiness model
-Relationships are scaled:
+
+Relationships scaling:
 $$
-R_{scaled} = \min\left(100,\; \frac{\text{relationships}}{5}\cdot 100\right)
+R_{\text{scaled}} = \min\left(100,\; \frac{\text{relationships}}{5}\cdot 100\right)
 $$
 
 Happiness target:
 $$
-H^* = 0.3\cdot \text{health} \;+\; 0.3\cdot R_{scaled} \;+\; 0.4\cdot 100 \cdot \tanh\!\left(\frac{\text{money}}{\text{expenses} + \varepsilon}\right)
+H^* = 0.3\cdot \text{health} \;+\; 0.3\cdot R_{\text{scaled}}
+\;+\; 0.4\cdot 100 \cdot \tanh\!\left(\frac{\text{money}}{\text{expenses} + \varepsilon}\right)
 $$
+
 with \(\varepsilon = 1\).
 
 Update:
 $$
-\text{happiness}_{t+1} = \mathrm{clamp}_{0,100}\Big(0.7\cdot \text{happiness}_t + 0.3\cdot H^*\Big)
+\text{happiness}_{t+1} =
+\mathrm{clamp}_{0,100}\!\left(0.7\cdot \text{happiness}_t + 0.3\cdot H^*\right)
 $$
 
 ### 10.2 Stress model
+
 Relationship tension components:
 $$
 \text{loneliness} = \max(0, 3-\text{relationships})^2
@@ -272,41 +247,45 @@ $$
 $$
 $$
 \text{rel\_tension} = w_1(\text{loneliness}+\text{crowding})
+\quad\text{where } w_1 = 1
 $$
-where \(w_1=1\).
 
 Financial pressure:
 $$
 \text{fin\_pressure} = w_2 \cdot \frac{\text{expenses}}{\max(0,\text{money}) + 1}
+\quad\text{where } w_2 = 2
 $$
-where \(w_2=2\).
 
 Market anxiety (only when shares owned and price drops):
 $$
-\text{market\_anxiety} \propto w_3 \cdot |\Delta P| \cdot \frac{\text{position\_value}}{\max(0,\text{money})+1}
+\text{market\_anxiety} \propto w_3 \cdot |\Delta P|\cdot
+\frac{\text{position\_value}}{\max(0,\text{money})+1}
+\quad\text{where } w_3=0.5
 $$
-with \(w_3=0.5\).
 
 Base stress target:
 $$
-\Psi^* = \frac{\text{rel\_tension} + \text{fin\_pressure} + \text{market\_anxiety}}
+\Psi^* =
+\frac{\text{rel\_tension} + \text{fin\_pressure} + \text{market\_anxiety}}
 {1 + \alpha\cdot \text{happiness} + \beta\cdot \text{hourly\_wage}}
+\quad\text{where } \alpha=0.01,\; \beta=0.001
 $$
-where \(\alpha=0.01,\; \beta=0.001\).
 
-Hydration scaling:
+Hydration scaling (only when awake):
 - if hydration < 30: \(\Psi^* \leftarrow 1.1\Psi^*\)
 - if hydration < 15: \(\Psi^* \leftarrow 1.25\Psi^*\)
 
 Debt penalty:
-- if money < 0: multiply by 1.5
+- if money < 0: multiply stress target by \(1.5\)
 
 Update:
 $$
-\text{stress}_{t+1} = \mathrm{clamp}_{0,100}\Big(0.7\cdot \text{stress}_t + 0.3\cdot \Psi^*\cdot \text{debt\_penalty}\Big)
+\text{stress}_{t+1} =
+\mathrm{clamp}_{0,100}\!\left(0.7\cdot \text{stress}_t + 0.3\cdot \Psi^*\cdot \text{debt\_penalty}\right)
 $$
 
 ### 10.3 Health model
+
 Age factor:
 $$
 A = e^{0.02\cdot \text{age}}
@@ -336,7 +315,7 @@ $$
 
 Update:
 $$
-\text{health}_{t+1} = \mathrm{clamp}_{0,100}(\text{health}_t + \Delta\text{health})
+\text{health}_{t+1} = \mathrm{clamp}_{0,100}\!\left(\text{health}_t + \Delta\text{health}\right)
 $$
 
 Starvation damage (if hunger = 100 for consecutive hours):
@@ -351,7 +330,8 @@ $$
 
 If health ≤ 0: agent dies and becomes a lootable estate.
 
-### 10.4 Hunger / hydration drift
+### 10.4 Hunger / hydration drift + emergency auto-consumption
+
 Per simulated hour:
 - hunger increases by:
   - +5 if awake
@@ -362,10 +342,9 @@ Per simulated hour:
 - energy decreases by:
   - −2 if awake
 
-Emergency auto-consumption triggers at critical thresholds and can consume:
-- held food/drink
-- inventory food/drink
-- emergency purchase from village food stock if affordable
+Emergency triggers:
+- if awake and hunger ≥ 90 → attempt emergency consume/buy
+- if awake and hydration ≤ 12 → attempt emergency drink/buy
 
 ---
 
@@ -377,11 +356,10 @@ Work/study are multi-step tasks:
 3. `interact_with` MCQ answer (`A` / `B` / `C`)
 
 Rules:
-- You must be **inside** the correct building to start
-- Task steps are locked: you cannot run unrelated tools mid-task
-- A hard failure cap exists (3 failures cancels the task)
-- Scenario pools are role-specific with >= 30 unique scenarios per role
-- Observation shows the active MCQ question and choices during the answer step
+- must be **inside** the correct building to start
+- task steps are locked: unrelated tools are blocked mid-task
+- after 3 failures, the task cancels
+- scenario pools are role-specific (>= 30 unique scenarios per role)
 
 ### Energy / duration cap
 Work and study duration is capped:
@@ -389,13 +367,14 @@ Work and study duration is capped:
 
 ### Pay model (work)
 $$
-\text{pay} = \text{hourly\_wage} \cdot \text{hours} \cdot \frac{\text{market\_price}}{100}
+\text{pay} = \text{hourly\_wage}\cdot \text{hours}\cdot \frac{\text{market\_price}}{100}
 $$
+
 Half pay if incorrect.
 
 ### Education model
-- education +5, wage +5 if correct
-- education +1, wage +1 if incorrect
+- education +5 and wage +5 if correct
+- education +1 and wage +1 if incorrect
 - tuition charged up front:
   - baseline 2000
   - masters 4000
@@ -414,7 +393,7 @@ $$
 P_{t+1} = P_t \cdot \exp\Big((\mu-\tfrac{1}{2}\sigma^2) + \sigma \epsilon_t\Big)\cdot \text{impact}
 $$
 
-Impact is based on net volume that hour; invalid prices reset to 100 and prices are clamped.
+Impact is based on net volume that hour; prices are clamped to a sane range.
 
 Orders placed when closed are queued and executed during open hours.
 
@@ -428,69 +407,47 @@ A midnight tax is applied, but low-cash agents are exempt:
 
 ---
 
-## 14) Economy / shopping rules
+## 14) Social: voicemail + missed interactions + queued delivery
 
-### Food
-Food can be bought abstractly from village stock from anywhere, if:
-- in stock
-- affordable
-
-### Non-food items
-Everyday and health items require being:
-- **inside** `Store_A` or `Store_B`
-
-### Vehicles
-Vehicles require being:
-- **inside** `Vehicle_Dealership`
-
-### Housing
-Homes are purchased via `buy_item` if the agent can afford the upgrade.
+Social rules:
+- `call_person`: if target is busy or sleeping → call goes to **voicemail** (persisted). Otherwise the target gets a real-time call notification.
+- `talk_to`: if target is busy/sleeping → initiator fails but target receives a **missed interaction** notification.
+- `give_item` / `give_money`: if target is busy/sleeping → transfer is **queued** and escrowed immediately, then delivered once the target becomes available.
+  - If queued item delivery arrives but recipient inventory is full → delivery cancels and returns to sender (or drops at sender in rare full-inventory edge cases).
 
 ---
 
-## 15) Corpse estates / auto-loot
+## 15) Notifications (drip-fed)
 
-When an agent dies:
-- their shares are liquidated
-- their inventory and money become a corpse estate at the death location
-- nearby living agents can automatically recover estate loot when close enough
-
-Agents do **not** manually loot corpse items one-by-one.
+Notifications can accumulate while an agent is busy. To keep prompts usable:
+- only a limited number of notifications are shown per turn
+- the rest remain queued and a count is shown: “Queued notifications remaining: N”
 
 ---
 
-## 16) Social: voicemail + missed-interaction + queued delivery
-
-Social actions obey availability rules:
-- If a call target is busy/sleeping, the call goes to **voicemail**, stored persistently on the recipient (shown in observations).
-- If an in-person interaction target is busy/sleeping, the target receives a **missed interaction** notification.
-- `give_item` / `give_money` can be **queued** if recipient is busy/sleeping (escrowed immediately), then delivered when the recipient becomes available.
-- If queued item delivery would arrive but recipient inventory is full, delivery is cancelled and returned to sender (or dropped at sender in rare full-inventory edge cases).
-
----
-
-## 17) Logging
+## 16) Logging
 
 Logs are JSONL (one JSON object per line) and include:
 - pre/post agent state snapshots
 - tool name/args/result
-- prompt hash + char count
-- structured `system_prompt` + last `user_observation` (plus optional full messages)
+- prompt hash + prompt char count
+- structured `system_prompt` + `user_observation` fields
+- optional full messages via `LOG_FULL_MESSAGES=1`
 
-To store full prompt/messages:
+Enable full prompt/messages logging:
 ```bash
 LOG_FULL_MESSAGES=1 python python/sim.py
 ```
 
 ---
 
-## 18) Tools (current)
-Tools are defined in `tools.json` and implemented in `python/tooling/handlers/*`.
+## 17) Tools
 
-Current tool list:
+Tools are defined in `tools.json` and enforced by the engine. Current set includes:
+
 - `talk_to(person, message)`
 - `call_person(person, message)`
-- `change_status(person, type, value)`
+- `change_status(person, type, value)`  (belief update or relationship request/accept)
 - `give_item(person, item)`
 - `give_money(person, amount)`
 - `attack_person(person)`
@@ -512,11 +469,12 @@ Current tool list:
 
 ---
 
-## 19) Phase 1 starting agents
+## 18) Phase 1 starting agents
 
 Default initialization (see `python/sim.py`):
-| Name | Role | Age | Hourly Wage | Starting Cash | Starting Home Type |
-|------|------|-----|-------------|---------------|--------------------|
+
+| Name | Role | Age | Hourly Wage | Starting Cash | Home Type |
+|------|------|-----|-------------|---------------|----------|
 | Alex | developer | 28 | $50 | $5000 | Small Apartment |
 | Jamie | nurse | 35 | $60 | $6000 | Apartment |
 | Taylor | student | 21 | $20 | $20 | Small Apartment |
@@ -528,5 +486,6 @@ Homes are allocated from vacant lots; initialization prefers floor-1 homes when 
 
 ---
 
-## 20) License
+## 19) License
+
 MIT License. See `LICENSE`.
