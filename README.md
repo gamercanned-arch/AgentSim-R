@@ -1,11 +1,11 @@
 # AgentSim-R — Agent Simulation (Research)
 
-AgentSim-R is a synthetic “imaginary world” simulation of multiple LLM-driven agents acting under explicit constraints: time, money, energy, hunger, hydration, open hours, proximity, inventory limits, and inventory/hand state. The goal is to study **emergent behavior** (economic, social, and survival dynamics) when agents must make grounded decisions in a shared environment.
+AgentSim-R is a synthetic “imaginary world” simulation of multiple LLM-driven agents acting under explicit constraints: **time, money, energy, hunger, hydration, open hours, proximity, inventory limits, and inventory/hand state**. The goal is to study **emergent behavior** (economic, social, and survival dynamics) when agents must make grounded decisions in a shared environment.
 
 This is not freeform roleplay. Agents must choose **one concrete action per turn** via tool calls, and the environment enforces hard constraints.
 
 > [!NOTE]
-> Any and all open source contributions are welcome. If the moderator(s) feel(s) that they are useful to ***AgentSim-R***, then they will be merged accordingly. Thank You
+> **Summary**: This project aims to observe *emergent behavior* when multiple LLM agents interact with a shared environment under enforceable constraints (movement, money, needs, schedules, and tool contracts). It is designed to be research-auditable rather than “creative RP”.
 
 ---
 
@@ -22,7 +22,7 @@ llama-server -m /path/to/model.gguf -c 262144 --parallel 1 --slot-save-path ./ca
 Key points:
 - Context is configured for large windows (`CONTEXT_SIZE=262144` in `python/config.py`).
 - **Per-agent slot save/restore** is enabled using `cache/agent_{id}.bin`.
-- Generation settings are currently set in `python/prompting.py` (`temperature`, `top_p`, `repeat_penalty`, etc.).
+- Generation settings are set in `python/prompting.py` (`temperature`, `top_p`, `repeat_penalty`, etc.).
 
 ### Run
 From repo root:
@@ -33,7 +33,7 @@ python python/sim.py
 ### Prompt extraction / debugging
 To dump the full rendered prompt for every starting agent:
 ```bash
-python extract_prompt.py
+python extract_t1.py
 ```
 
 This writes all prompts to:
@@ -89,18 +89,18 @@ Important contract notes:
 
 ## 4) Repository layout (modularized)
 
-The project keeps stable import paths while using a modular internal structure:
+Stable import paths + modular internals:
 
 - `python/tools.py`: facade re-exporting tool execution + catalogs from modular code
 - `python/utils.py`: facade re-exporting prompting + server call functions
-- `python/prompting.py`: compact observation prompt builder + llama-server request + slot save/restore
-- `python/core.py`: time/date utilities and market-hours logic
+- `python/prompting.py`: observation prompt builder + llama-server request + slot save/restore
+- `python/core.py`: time/date utilities + market-hours logic
 
-Tool engine is modular:
+Tool engine:
 - `python/tooling/execute.py`: dispatcher + registry
 - `python/tooling/parsing.py`: XML tool-call parser
 - `python/tooling/catalogs.py`: item + vehicle catalogs + workplace mappings
-- `python/tooling/navigation.py`: shortest-route distance on a coarse road grid (A*)
+- `python/tooling/navigation.py`: shortest-route distance (A* on coarse road grid)
 - `python/tooling/scenarios.py`: scenario pools with recency control
 - `python/tooling/helpers.py`: canonicalization, reachability, busy checks, etc.
 - `python/tooling/death.py`: death/estate logic
@@ -141,12 +141,10 @@ For **roofed buildings**, `move_to(place=...)` moves to the **outside entrance a
 To enter a roofed building:
 - use `walk` until you cross into the building’s boundary
 
-This prevents “teleport into building” and supports realistic closed-door behavior.
-
 ### Open-air locations
-For **open-air locations** such as parks, squares, lakes, and similar spaces:
+For **open-air locations** (parks, lakes, squares):
 - `move_to` places the agent **directly there**
-- there is no separate outside-door step
+- no separate outside-door step
 
 ### Home aliases
 Agents should use friendly home aliases such as:
@@ -157,10 +155,10 @@ They should not use internal location IDs like:
 - `SmallApartment_Maple_Unit_1_Floor_1`
 
 ### Simulation date/time
-The simulation now uses a **real calendar start date**:
+The simulation uses a real calendar start date:
 - **Monday, 30-03-2026 08:00**
 
-Prompts/logs use real date formatting instead of arbitrary synthetic labels like `Day 1`.
+Prompts/logs use real date formatting.
 
 ---
 
@@ -175,7 +173,7 @@ This approximates parallel action: one agent can be busy for hours while others 
 
 ---
 
-## 7) Movement + pathing (Python DSA, shortest-route)
+## 7) Movement + pathing (shortest-route distance)
 
 Movement distance is computed using an infrastructure-aware approximation:
 - a coarse road grid over the `5km × 5km` plane
@@ -193,7 +191,7 @@ Then route distance is:
 d = d_{tail} + d_{grid} + d_{head}
 \]
 
-This is implemented in `python/tooling/navigation.py`.
+Implemented in `python/tooling/navigation.py`.
 
 ### Coordinate rule
 Coordinates are shown to agents for awareness and realism, but:
@@ -212,21 +210,9 @@ Rules:
   - time cost based on route distance and vehicle speed
   - fuel cost based on route distance in km
   - small energy cost
-- If an agent cannot afford fuel, movement falls back to walking
+- If an agent cannot afford fuel, movement falls back to walking (with a notification)
 
 Vehicle parameters live in `python/tooling/catalogs.py`.
-
-Examples:
-- Scooter default speed ≈ `12.5 m/s`
-- Fuel costs are simplified to a single `$ / km` parameter
-
-Vehicles can be purchased only:
-- while **inside** `Vehicle_Dealership`
-- during dealership open hours
-
-For cleaner early-game and ownership behavior:
-- starting agents are initialized into floor-1 homes
-- home allocation currently prefers floor-1 homes where available
 
 ---
 
@@ -241,27 +227,23 @@ Each agent maintains explicit numeric state (bounded):
 - `happiness` ∈ [0, 100]
 - `education` ∈ [0, 100]
 - `relationships` ∈ [0, 25]
-- plus money, wage, inventory, holdings, vehicle state, pending tasks, etc.
+- plus money, wage, inventory, holdings, vehicle state, pending tasks, queued orders, voicemail, etc.
 
 Prompts surface a compact but useful subset, including:
 - real date/time
-- health
-- hunger
-- energy
-- hydration
-- stress
-- happiness
-- nearby people
-- visible objects
+- health/hunger/energy/hydration/stress/happiness
+- nearby people, visible objects
 - nearby location open/closed status
 - active task details
-- inventory count shown as current/max
+- inventory count
+- voicemail preview
+- notifications (drip-fed)
 
 ---
 
 ## 10) Passive dynamics (math models)
 
-Passive updates occur once per simulated hour.
+Passive updates occur once per simulated hour (`PASSIVE_TICK_SECONDS = 3600`).
 
 ### 10.1 Happiness model
 Relationships are scaled:
@@ -398,20 +380,17 @@ Rules:
 - You must be **inside** the correct building to start
 - Task steps are locked: you cannot run unrelated tools mid-task
 - A hard failure cap exists (3 failures cancels the task)
-- Scenario pools are role-specific and built to provide **at least 30 genuinely unique scenarios per role**
-- Prompt observations now show the full active MCQ question and choices during the answer step
+- Scenario pools are role-specific with >= 30 unique scenarios per role
+- Observation shows the active MCQ question and choices during the answer step
 
 ### Energy / duration cap
-Work and study duration is capped at:
+Work and study duration is capped:
 - **1 to 10 hours**
-
-This keeps required energy consistent with the agent’s `[0,100]` energy bound.
 
 ### Pay model (work)
 \[
 \text{pay} = \text{hourly\_wage} \cdot \text{hours} \cdot \frac{\text{market\_price}}{100}
 \]
-
 Half pay if incorrect.
 
 ### Education model
@@ -435,23 +414,17 @@ Price updates hourly during open hours:
 P_{t+1} = P_t \cdot \exp\Big((\mu-\tfrac{1}{2}\sigma^2) + \sigma \epsilon_t\Big)\cdot \text{impact}
 \]
 
-with impact based on net volume that hour.
+Impact is based on net volume that hour; invalid prices reset to 100 and prices are clamped.
 
-Defensive behavior:
-- invalid prices reset to 100
-- hard clamp to a sane range
-
-Orders placed when closed are queued.
+Orders placed when closed are queued and executed during open hours.
 
 ---
 
 ## 13) Taxes
 
 A midnight tax is applied, but low-cash agents are exempt:
-- if money < `TAX_EXEMPT_BELOW_CASH` (currently 200): no tax
+- if money < `TAX_EXEMPT_BELOW_CASH` (200): no tax
 - else: subtract `TAX_AMOUNT`
-
-This prevents immediate negative spirals for poor agents, such as students.
 
 ---
 
@@ -462,8 +435,6 @@ Food can be bought abstractly from village stock from anywhere, if:
 - in stock
 - affordable
 
-This supports emergency survival and simpler baseline behavior.
-
 ### Non-food items
 Everyday and health items require being:
 - **inside** `Store_A` or `Store_B`
@@ -473,7 +444,7 @@ Vehicles require being:
 - **inside** `Vehicle_Dealership`
 
 ### Housing
-Homes are still purchased via `buy_item` if the agent can afford the upgrade.
+Homes are purchased via `buy_item` if the agent can afford the upgrade.
 
 ---
 
@@ -482,86 +453,80 @@ Homes are still purchased via `buy_item` if the agent can afford the upgrade.
 When an agent dies:
 - their shares are liquidated
 - their inventory and money become a corpse estate at the death location
-- nearby living agents can automatically recover estate loot and cash when close enough
+- nearby living agents can automatically recover estate loot when close enough
 
-This is implemented through:
-- death handling in `python/tooling/death.py`
-- auto-loot handling in `python/tooling/handlers/inventory_loot.py`
-
-Agents do **not** manually search corpse items one-by-one.
+Agents do **not** manually loot corpse items one-by-one.
 
 ---
 
-## 16) Logging (research-friendly, non-exploding)
+## 16) Social: voicemail + missed-interaction + queued delivery
 
-By default, logs store:
-- pre/post state snapshots
+Social actions obey availability rules:
+- If a call target is busy/sleeping, the call goes to **voicemail**, stored persistently on the recipient (shown in observations).
+- If an in-person interaction target is busy/sleeping, the target receives a **missed interaction** notification.
+- `give_item` / `give_money` can be **queued** if recipient is busy/sleeping (escrowed immediately), then delivered when the recipient becomes available.
+- If queued item delivery would arrive but recipient inventory is full, delivery is cancelled and returned to sender (or dropped at sender in rare full-inventory edge cases).
+
+---
+
+## 17) Logging
+
+Logs are JSONL (one JSON object per line) and include:
+- pre/post agent state snapshots
 - tool name/args/result
 - prompt hash + char count
-- summarized message previews
+- structured `system_prompt` + last `user_observation` (plus optional full messages)
 
-To log full prompts/messages:
+To store full prompt/messages:
 ```bash
 LOG_FULL_MESSAGES=1 python python/sim.py
 ```
 
-This exists because logging full prompt+history every turn causes massive disk usage.
+---
+
+## 18) Tools (current)
+Tools are defined in `tools.json` and implemented in `python/tooling/handlers/*`.
+
+Current tool list:
+- `talk_to(person, message)`
+- `call_person(person, message)`
+- `change_status(person, type, value)`
+- `give_item(person, item)`
+- `give_money(person, amount)`
+- `attack_person(person)`
+- `move_to(place)`
+- `walk(direction)`
+- `buy_item(item)`
+- `eat_food(item)`
+- `sleep(hours)`
+- `do_hobby(item)`
+- `work_job(jobname, hours)`
+- `get_education(type, hours)`
+- `seek_medicalcare()`
+- `interact_with(person_or_object, action)`
+- `pick_item(item_name)`
+- `hold_item(item_name)`
+- `drop_item(item_name)`
+- `buy_stock(shares)`
+- `sell_stock(shares)`
 
 ---
 
-## 17) Notes on prompt design
+## 19) Phase 1 starting agents
 
-The per-turn observation is intentionally compact and action-biased. It includes:
-- real calendar date/time
-- current location and coordinates
-- nearby people
-- visible objects
-- nearby entrances
-- nearby public location open/closed info
-- key needs/state
-- held item / inventory count
-- market line
-- task hint / question if active
-- last tool result
-- notifications
+Default initialization (see `python/sim.py`):
+| Name | Role | Age | Hourly Wage | Starting Cash | Starting Home Type |
+|------|------|-----|-------------|---------------|--------------------|
+| Alex | developer | 28 | $50 | $5000 | Small Apartment |
+| Jamie | nurse | 35 | $60 | $6000 | Apartment |
+| Taylor | student | 21 | $20 | $20 | Small Apartment |
+| Jordan | delivery driver | 39 | $20 | $2000 | Apartment |
+| Mia | teacher | 41 | $35 | $3500 | House |
+| Ethan | founder | 30 | $100 | $10000 | Luxury House |
 
-The model may “think” inside `<think>...</think>`, but it must output exactly one tool call.
-
----
-
-## 18) Contributing
-
-Open source contributions are welcome.
-
-Good contribution candidates include:
-- new locations
-- better scenario pools
-- improved prompt compactness
-- stricter tool parsing
-- richer economic/social rules
-- bug fixes in movement, inventory, or world consistency
-- better logging/analysis tooling
-
-Please keep contributions aligned with the project’s core constraint:
-- agents must remain **grounded**
-- tools should remain **enforceable**
-- behavior should remain **research-auditable**
-
----
-
-## 19) Acknowledgements
-
-AgentSim-R is built in the open, and open source contributions are appreciated.
-
-Acknowledgements:
-- Thanks to everyone who contributes code, bug reports, ideas, testing feedback, scenario content, documentation, and simulation-design improvements.
-- Thanks to the open-source tooling ecosystem that makes local inference, prompt templating, and experimentation practical.
-- Thanks in advance to future contributors helping improve realism, consistency, and research usefulness across the project.
-
-If your contribution meaningfully improves AgentSim-R, it may be merged and reflected in the evolving project history.
+Homes are allocated from vacant lots; initialization prefers floor-1 homes when available.
 
 ---
 
 ## 20) License
-
-Modified MIT License. See `LICENSE`.
+MIT License. See `LICENSE`.
