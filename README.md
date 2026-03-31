@@ -262,56 +262,45 @@ $$
 \text{happiness}*{t+1} = \mathrm{clamp}*{[0,100]}!\left(0.7\cdot \text{happiness}_t + 0.3\cdot H^*\right)
 $$
 
-### 10.2 Stress model
+#### 10.2 Stress model
 
 Relationship tension components:
-
 $$
-\text{loneliness} = \max(0,; 3-\text{relationships})^2
+\text{loneliness} = \max(0, 3 - \text{relationships})^2
 $$
-
 $$
-\text{crowding} = \max(0,; \text{relationships}-10)\cdot 2
+\text{crowding} = \max(0, \text{relationships} - 10) \cdot 2
 $$
-
 $$
-\text{rel_{tension}} = w_1(\text{loneliness}+\text{crowding}) \quad \text{where } w_1 = 1
+\text{rel}_{\text{tension}} = w_1 (\text{loneliness} + \text{crowding}) \quad \text{where } w_1 = 1
 $$
 
 Financial pressure:
-
 $$
-\text{fin_{pressure}} = w_2 \cdot \frac{\text{expenses}}{\max(0,\text{money}) + 1}
-\quad \text{where } w_2 = 2
+\text{fin}_{\text{pressure}} = w_2 \cdot \frac{\text{expenses}}{\max(0, \text{money}) + 1} \quad \text{where } w_2 = 2
 $$
 
 Market anxiety (only when shares are owned and price drops):
-
 $$
-\text{market_{anxiety}} \propto w_3 \cdot |\Delta P|\cdot \frac{\text{position_value}}{\max(0,\text{money})+1}
-\quad \text{where } w_3 = 0.5
+\text{market}_{\text{anxiety}} \propto w_3 \cdot |\Delta P| \cdot \frac{\text{position_value}}{\max(0, \text{money}) + 1} \quad \text{where } w_3 = 0.5
 $$
 
 Base stress target:
-
 $$
-\Psi^* = \frac{\text{rel_{tension}} + \text{fin_{pressure}} + \text{market_{anxiety}}}{1 + \alpha\cdot \text{happiness} + \beta\cdot \text{hourly_{wag0e}}}
-\quad \text{where } \alpha = 0.01,; \beta = 0.001
+\Psi^* = \frac{\text{rel}_{\text{tension}} + \text{fin}_{\text{pressure}} + \text{market}_{\text{anxiety}}}{1 + \alpha \cdot \text{happiness} + \beta \cdot \text{hourly_wage}}
 $$
+where $\alpha = 0.01$, $\beta = 0.001$.
 
 Hydration scaling (only when awake):
-
-* if hydration < 30: $\Psi^* \leftarrow 1.1,\Psi^*$
-* if hydration < 15: $\Psi^* \leftarrow 1.25,\Psi^*$
+- if hydration < 30: $\Psi^* \leftarrow 1.1 \Psi^*$
+- if hydration < 15: $\Psi^* \leftarrow 1.25 \Psi^*$
 
 Debt penalty:
-
-* if money < 0: multiply stress target by $1.5$
+- if money < 0: multiply stress target by 1.5
 
 Update:
-
 $$
-\text{stress}_{t+1} = \mathrm{clamp}*{[0,100]}!\left(0.7\cdot \text{stress}_t + 0.3\cdot \Psi^*\cdot \text{debt_{penalty}}\right)
+\text{stress}_{t+1} = \mathrm{clamp}_{[0,100]}\left(0.7 \cdot \text{stress}_t + 0.3 \cdot \Psi^* \cdot \text{debt_penalty}\right)
 $$
 
 ### 10.3 Health model
@@ -408,30 +397,28 @@ Rules:
 * after 3 failures, the task cancels
 * scenario pools are role-specific (>= 30 unique scenarios per role)
 
-### Energy / duration cap
+#### Energy / duration cap
 
 Work and study duration is capped:
+- 1 to 10 hours
 
-* **1 to 10 hours**
-
-### Pay model (work)
+#### Pay model (work)
 
 $$
-\text{pay} = \text{hourly_{wage}}\cdot \text{hours}\cdot \frac{\text{market_{price}}}{100}
+\text{pay} = \text{hourly_wage} \cdot \text{hours} \cdot \frac{\text{market_price}}{100}
 $$
 
 Half pay if incorrect.
 
-### Education model
+#### Education model
 
-* education +5 and wage +5 if correct
-* education +1 and wage +1 if incorrect
-* tuition charged up front:
-
-  * baseline 2000
-  * masters 4000
-  * phd 8000
-* student discount caps tuition at 150
+- education +5 and wage +5 if correct
+- education +1 and wage +1 if incorrect
+- tuition charged up front:
+  - baseline 2000
+  - masters 4000
+  - phd 8000
+- student discount caps tuition at 150
 
 ---
 
@@ -548,4 +535,4 @@ Homes are allocated from vacant lots; initialization prefers floor-1 homes when 
 
 ## 19) License
 
-MIT License. See `LICENSE`.
+**Modified MIT** License. See `LICENSE`.
