@@ -275,27 +275,27 @@ $$
 $$
 
 $$
-\text{rel_tension} = w_1(\text{loneliness}+\text{crowding}) \quad \text{where } w_1 = 1
+\text{rel_{tension}} = w_1(\text{loneliness}+\text{crowding}) \quad \text{where } w_1 = 1
 $$
 
 Financial pressure:
 
 $$
-\text{fin_pressure} = w_2 \cdot \frac{\text{expenses}}{\max(0,\text{money}) + 1}
+\text{fin_{pressure}} = w_2 \cdot \frac{\text{expenses}}{\max(0,\text{money}) + 1}
 \quad \text{where } w_2 = 2
 $$
 
 Market anxiety (only when shares are owned and price drops):
 
 $$
-\text{market_anxiety} \propto w_3 \cdot |\Delta P|\cdot \frac{\text{position_value}}{\max(0,\text{money})+1}
+\text{market_{anxiety}} \propto w_3 \cdot |\Delta P|\cdot \frac{\text{position_value}}{\max(0,\text{money})+1}
 \quad \text{where } w_3 = 0.5
 $$
 
 Base stress target:
 
 $$
-\Psi^* = \frac{\text{rel_tension} + \text{fin_pressure} + \text{market_anxiety}}{1 + \alpha\cdot \text{happiness} + \beta\cdot \text{hourly_wage}}
+\Psi^* = \frac{\text{rel_{tension}} + \text{fin_{pressure}} + \text{market_{anxiety}}}{1 + \alpha\cdot \text{happiness} + \beta\cdot \text{hourly_{wag0e}}}
 \quad \text{where } \alpha = 0.01,; \beta = 0.001
 $$
 
@@ -311,7 +311,7 @@ Debt penalty:
 Update:
 
 $$
-\text{stress}*{t+1} = \mathrm{clamp}*{[0,100]}!\left(0.7\cdot \text{stress}_t + 0.3\cdot \Psi^*\cdot \text{debt_penalty}\right)
+\text{stress}_{t+1} = \mathrm{clamp}*{[0,100]}!\left(0.7\cdot \text{stress}_t + 0.3\cdot \Psi^*\cdot \text{debt_{penalty}}\right)
 $$
 
 ### 10.3 Health model
@@ -340,9 +340,9 @@ $$
 Health delta:
 
 $$
-\Delta \text{health}
-====================
-
+\Delta \text{health}$$
+====================   
+$$
 \Big(
 -\big(0.5\cdot \text{stress} + 0.3\cdot \text{hunger} + 10\cdot \text{energy_penalty} + D\big)
 
@@ -417,7 +417,7 @@ Work and study duration is capped:
 ### Pay model (work)
 
 $$
-\text{pay} = \text{hourly_wage}\cdot \text{hours}\cdot \frac{\text{market_price}}{100}
+\text{pay} = \text{hourly_{wage}}\cdot \text{hours}\cdot \frac{\text{market_{price}}}{100}
 $$
 
 Half pay if incorrect.
