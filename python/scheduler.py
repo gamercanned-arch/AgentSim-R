@@ -349,9 +349,6 @@ def _commit_history(
     agent.chat_history.append(
         {"role": "tool", "content": _tool_history_text(tool_result)}
     )
-    agent.chat_history.append(
-        {"role": "tool", "content": _tool_history_text(tool_result)}
-    )
 
 
 def _pop_oldest_turn(agent) -> bool:
@@ -665,16 +662,14 @@ def _refresh_agent_activity(agent, current_time: float) -> None:
 def _process_market_queues(world, sim_time: float) -> None:
     if not is_market_open(sim_time):
         return
-
     for agent in world.agents.values():
         if not agent.alive or not agent.pending_market_orders:
             continue
-
-        for order in list(agent.pending_market_orders):
+        remaining = []
+        for order in agent.pending_market_orders:
             shares = int(order.get("shares", 0))
             if shares <= 0:
                 continue
-
             if order["type"] == "buy":
                 cost = world.market_price * shares
                 if agent.money >= cost:
@@ -689,10 +684,7 @@ def _process_market_queues(world, sim_time: float) -> None:
                         f"MARKET: Queued buy executed at ${world.market_price:.4f} for {shares} share(s)."
                     )
                 else:
-                    agent.pending_notifications.append(
-                        "MARKET: Queued buy failed. Insufficient funds."
-                    )
-
+                    remaining.append(order)
             elif order["type"] == "sell":
                 if agent.shares_owned >= shares:
                     proceeds = world.market_price * shares
@@ -705,11 +697,8 @@ def _process_market_queues(world, sim_time: float) -> None:
                         f"MARKET: Queued sell executed at ${world.market_price:.4f} for {shares} share(s)."
                     )
                 else:
-                    agent.pending_notifications.append(
-                        "MARKET: Queued sell failed. Insufficient shares."
-                    )
-
-        agent.pending_market_orders.clear()
+                    remaining.append(order)
+        agent.pending_market_orders = remaining
 
 
 def _update_market_price(world, sim_time: float, dt_seconds: float) -> None:
@@ -769,8 +758,9 @@ def _restock_if_needed(world) -> None:
 
 
 def _apply_midnight_taxes(world) -> None:
-    hour = (int(world.last_passive) // 3600) % 24
-    if hour != 0:
+    last_day = int(world.last_passive) // 86400
+    current_day = int(world.sim_time) // 86400
+    if current_day == last_day:
         return
 
     for agent in world.agents.values():
