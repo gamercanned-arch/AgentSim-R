@@ -5,19 +5,22 @@ import os
 import re
 import urllib.error
 import urllib.request
+from collections import Counter
 from typing import List, Optional
 
 import jinja2
 
-from config import (
+from python.config import (
+    AUTO_LOOT_RADIUS,
     CACHE_DIR,
     CHARS_PER_TOKEN,
+    GROUND_PICKUP_RADIUS,
     MAX_NEW_TOKENS,
     PROMPTS_DIR,
     TOOLS_PATH,
 )
-from core import get_time_string, is_market_open
-from locations import (
+from python.core import get_time_string, is_market_open
+from python.locations import (
     PUBLIC_LOCATIONS_3D,
     describe_home_location,
     get_current_location_def,
@@ -26,7 +29,7 @@ from locations import (
     humanize_location_name,
     is_home_location,
 )
-from tooling.catalogs import ITEM_CATALOG, generate_catalog_text
+from python.tooling.catalogs import ITEM_CATALOG, generate_catalog_text
 
 SERVER_URL = "http://127.0.0.1:8080"
 
@@ -67,9 +70,8 @@ def _format_hour(hour_float: float) -> str:
 
 
 def _is_all_day(loc) -> bool:
-    return (
-        float(loc.open_time) == float(loc.close_time)
-        or (float(loc.open_time) == 0.0 and float(loc.close_time) >= 24.0)
+    return float(loc.open_time) == float(loc.close_time) or (
+        float(loc.open_time) == 0.0 and float(loc.close_time) >= 24.0
     )
 
 
@@ -96,9 +98,10 @@ def _build_base_system_prompt(agent) -> str:
         "- Coordinates shown in observations are read-only telemetry. Never pass coordinates into any tool.\n"
         "- For move_to, use only a named public location or a home alias like Home_Taylor. Never use raw coordinates or internal location IDs.\n"
         "- Place, item, and person names are normalized loosely by the engine, so close variants like Startup Sowl or Office FedEx are acceptable.\n"
-        "- move_to travels to the OUTSIDE entrance area; to enter a building, walk into its boundary.\n"
+        "- move_to travels to the OUTSIDE entrance area for roofed buildings; to enter a building, walk into its boundary.\n"
+        "- Open-air destinations like Park_Central count as being at that location when you arrive.\n"
         "- Vehicles: you can ride only if within 100m of your parked vehicle; fuel costs $/km when riding.\n"
-        "- If you cannot afford fuel, you walk instead.\n"
+        "- If you cannot afford fuel, move_to fails.\n"
         "- pick_item is for nearby dropped ground items, or for the required task prop during an active work or study task.\n"
         "- hold_item moves an inventory item into your hand, or stores your held item back into inventory when item_name is store or None.\n"
         "- Required task props cannot be stored away until the task ends.\n"
@@ -109,8 +112,17 @@ def _build_base_system_prompt(agent) -> str:
 
     catalog_text = generate_catalog_text()
     hours_text = _static_open_hours_text()
-
-    sections = [s for s in (common_prompt, persona_prompt, dynamic_rules, hours_text, catalog_text) if s]
+    sections = [
+        s
+        for s in (
+            common_prompt,
+            persona_prompt,
+            dynamic_rules,
+            hours_text,
+            catalog_text,
+        )
+        if s
+    ]
     return "\n\n".join(sections).strip()
 
 
@@ -123,7 +135,9 @@ def _display_location(agent, world) -> str:
             if not other.alive:
                 continue
             if other.home_location and agent.location == other.home_location:
-                return f"Home_{other.name} ({describe_home_location(other.home_location)})"
+                return (
+                    f"Home_{other.name} ({describe_home_location(other.home_location)})"
+                )
         return describe_home_location(agent.location)
 
     return humanize_location_name(agent.location)
@@ -133,6 +147,7 @@ def _bearing_to_text(dx: float, dy: float) -> str:
     if abs(dx) < 1e-6 and abs(dy) < 1e-6:
         return "here"
     import math
+
     ang = math.degrees(math.atan2(dy, dx))
     dirs = [
         ("east", 0),
@@ -146,6 +161,17 @@ def _bearing_to_text(dx: float, dy: float) -> str:
     ]
     best = min(dirs, key=lambda d: abs(((ang - d[1] + 180) % 360) - 180))
     return best[0]
+
+
+def _safe_prompt_text(text: str, max_chars: int = 240) -> str:
+    s = "" if text is None else str(text)
+    s = s.replace("\x00", "")
+    s = s.replace("<", "‹").replace(">", "›")
+    s = re.sub(r"[\r\t]+", " ", s)
+    s = re.sub(r"\n{3,}", "\n\n", s).strip()
+    if len(s) > max_chars:
+        s = s[: max_chars - 20] + f"... ({len(s)} chars)"
+    return s
 
 
 def _nearby_people_same_floor(agent, world) -> str:
@@ -177,6 +203,7 @@ def _visible_objects_here(agent) -> str:
     loc_def = get_current_location_def(agent.x, agent.y, agent.z)
     if not loc_def:
         return "None"
+
     names = []
     for obj in loc_def.interactables:
         if abs(float(obj.get("z", 0.0)) - agent.z) <= 1.0:
@@ -184,11 +211,30 @@ def _visible_objects_here(agent) -> str:
                 names.append(f"{obj['name']}->Z{obj['target_z']}")
             else:
                 names.append(obj["name"])
-    return ", ".join(names) if names else "None"
+
+    task_entities = getattr(agent, "active_task_entities", {}) or {}
+    if agent.task_state in {"job_pick", "job_mcq"}:
+        prop = str(task_entities.get("prop", "")).strip()
+        target = str(task_entities.get("target", "")).strip()
+        if prop:
+            names.append(f"{prop} [task]")
+        if target:
+            names.append(f"{target} [task]")
+
+    deduped = []
+    seen = set()
+    for n in names:
+        k = n.lower()
+        if k not in seen:
+            deduped.append(n)
+            seen.add(k)
+
+    return ", ".join(deduped) if deduped else "None"
 
 
 def _nearest_entrances(agent, max_show: int = 3, max_dist: float = 120.0) -> str:
-    from locations import LOCATIONS_3D
+    from python.locations import LOCATIONS_3D
+
     candidates = []
     for loc in LOCATIONS_3D:
         if is_home_location(loc.name) and loc.name != agent.home_location:
@@ -202,18 +248,50 @@ def _nearest_entrances(agent, max_show: int = 3, max_dist: float = 120.0) -> str
     top = candidates[:max_show]
     if not top:
         return "None"
-    return "; ".join([f"{humanize_location_name(name)} door {d:.0f}m {dirn}" for (d, name, dirn) in top])
+    return "; ".join(
+        [
+            f"{humanize_location_name(name)} door {d:.0f}m {dirn}"
+            for (d, name, dirn) in top
+        ]
+    )
 
 
 def _owned_food_and_drinks(agent) -> str:
     owned = []
-    if agent.currently_holding and agent.currently_holding["item"] in ITEM_CATALOG["food"]:
+    if (
+        agent.currently_holding
+        and agent.currently_holding.get("item") in ITEM_CATALOG["food"]
+    ):
         owned.append(agent.currently_holding["item"])
     for it in agent.inventory:
         if it["item"] in ITEM_CATALOG["food"]:
             owned.append(it["item"])
     owned = sorted(set(owned))
     return ", ".join(owned) if owned else "None"
+
+
+def _inventory_line(agent) -> str:
+    # Item 9 fix: include durability information so agents can plan
+    # hobby usage and anticipate item destruction.
+    counts = Counter()
+    durability_map = {}
+    for it in agent.inventory:
+        name = it.get("item", "Unknown")
+        counts[name] += 1
+        dur = it.get("durability")
+        if dur is not None:
+            durability_map.setdefault(name, []).append(dur)
+    if not counts:
+        return "None"
+    parts = []
+    for name in sorted(counts.keys()):
+        n = counts[name]
+        base = f"{name} x{n}" if n > 1 else name
+        if name in durability_map:
+            durs = sorted(durability_map[name])
+            base += f" [dur:{','.join(str(d) for d in durs)}]"
+        parts.append(base)
+    return ", ".join(parts)
 
 
 def _vehicle_line(agent) -> str:
@@ -235,7 +313,9 @@ def _is_loc_open_now(loc, sim_time: float) -> bool:
     return current_hour >= loc.open_time or current_hour < loc.close_time
 
 
-def _nearby_location_hours(agent, sim_time: float, max_show: int = 6, max_dist: float = 1200.0) -> str:
+def _nearby_location_hours(
+    agent, sim_time: float, max_show: int = 6, max_dist: float = 1200.0
+) -> str:
     candidates = []
     for loc in PUBLIC_LOCATIONS_3D:
         ex, ey, ez = get_location_entrance_point(loc)
@@ -259,10 +339,14 @@ def _task_line(agent) -> str:
     flavor = agent.pending_task_data.get("flavor", {}) or {}
     prop = str(flavor.get("pick", "")).strip()
     target = str(flavor.get("obj", "")).strip()
+    workplace = str(agent.pending_task_data.get("workplace", "")).strip() or "Unknown"
 
     if agent.task_state == "job_pick":
         if prop:
-            return f"Task: ACTIVE | Next step: use pick_item for the required task prop {prop}."
+            return (
+                f"Task: ACTIVE at {workplace} | Next step: use pick_item for the required task prop {prop}. "
+                f"The prop is only available while you remain in the correct location."
+            )
         return "Task: ACTIVE | Next step: use pick_item for the required task prop."
 
     if agent.task_state == "job_mcq":
@@ -272,7 +356,7 @@ def _task_line(agent) -> str:
         b = str(choices.get("B", "")).strip()
         c = str(choices.get("C", "")).strip()
         return (
-            "Task: ACTIVE | Next step: answer the current scenario.\n"
+            f"Task: ACTIVE at {workplace} | Next step: answer the current scenario.\n"
             f"Task Target: {target or 'Unknown'}\n"
             f"Question: {q or 'Unknown'}\n"
             f"Choices: A) {a} | B) {b} | C) {c}\n"
@@ -282,22 +366,75 @@ def _task_line(agent) -> str:
     return f"Task: {agent.task_state}"
 
 
-def _voicemail_preview(agent, max_show: int = 15) -> str:
+def _voicemail_preview(agent, max_show: int = 10) -> str:
     inbox = getattr(agent, "voicemail_inbox", None) or []
     if not inbox:
         return "None"
     shown = inbox[-max_show:]
     parts = []
     for vm in shown:
-        from_name = str(vm.get("from", "Unknown"))
+        from_name = _safe_prompt_text(vm.get("from", "Unknown"), 80)
         t = vm.get("time", None)
-        t_str = get_time_string(float(t), include_weekday=True) if isinstance(t, (int, float)) else "Unknown time"
-        msg = str(vm.get("message", ""))
+        t_str = (
+            get_time_string(float(t), include_weekday=True)
+            if isinstance(t, (int, float))
+            else "Unknown time"
+        )
+        msg = _safe_prompt_text(vm.get("message", ""), 180)
         parts.append(f"- From {from_name} at {t_str}: {msg}")
-    extra = ""
     if len(inbox) > len(shown):
-        extra = f"\n(+{len(inbox) - len(shown)} older voicemails)"
-    return "\n".join(parts) + extra
+        parts.append(f"(+{len(inbox) - len(shown)} older voicemails)")
+    return "\n".join(parts)
+
+
+def _pending_status_requests_line(agent) -> str:
+    reqs = getattr(agent, "pending_status_requests", {}) or {}
+    if not reqs:
+        return "None"
+    parts = [
+        f"{_safe_prompt_text(k, 40)} -> {_safe_prompt_text(v, 40)}"
+        for k, v in sorted(reqs.items())
+    ]
+    return ", ".join(parts)
+
+
+def _pending_market_orders_line(agent) -> str:
+    orders = getattr(agent, "pending_market_orders", []) or []
+    if not orders:
+        return "None"
+    parts = []
+    for order in orders[-8:]:
+        otype = _safe_prompt_text(order.get("type", "?"), 20)
+        shares = int(order.get("shares", 0))
+        parts.append(f"{otype} {shares}")
+    return ", ".join(parts) if parts else "None"
+
+
+def _nearby_ground_items(agent, world, max_show: int = 8) -> str:
+    out = []
+    for gi in getattr(world, "ground_items", []) or []:
+        d = get_distance_3d((agent.x, agent.y, agent.z), (gi["x"], gi["y"], gi["z"]))
+        if d <= GROUND_PICKUP_RADIUS:
+            out.append((d, f"{gi.get('item', 'Unknown')} ({d:.0f}m)"))
+    out.sort(key=lambda x: x[0])
+    return ", ".join([s for _, s in out[:max_show]]) if out else "None"
+
+
+def _nearby_estates(agent, world, max_show: int = 6) -> str:
+    out = []
+    for estate in getattr(world, "corpse_estates", []) or []:
+        d = get_distance_3d(
+            (agent.x, agent.y, agent.z), (estate["x"], estate["y"], estate["z"])
+        )
+        if d <= AUTO_LOOT_RADIUS:
+            src = _safe_prompt_text(estate.get("source_agent_name", "Unknown"), 40)
+            cash = float(estate.get("money", 0.0))
+            item_count = len(estate.get("items", []) or [])
+            out.append(
+                (d, f"{src} estate ({d:.0f}m, cash=${cash:.2f}, items={item_count})")
+            )
+    out.sort(key=lambda x: x[0])
+    return ", ".join([s for _, s in out[:max_show]]) if out else "None"
 
 
 def build_messages(agent_id: int, world, notifications: str) -> List[dict]:
@@ -307,15 +444,22 @@ def build_messages(agent_id: int, world, notifications: str) -> List[dict]:
         agent.system_prompt = _build_base_system_prompt(agent)
 
     system_content = agent.system_prompt
-
     market_status = "OPEN" if is_market_open(world.sim_time) else "CLOSED"
-    held = agent.currently_holding["item"] if agent.currently_holding else "None"
+    held = (
+        agent.currently_holding.get("item", "None")
+        if agent.currently_holding
+        else "None"
+    )
 
     loc_label = _display_location(agent, world)
     loc_def = get_current_location_def(agent.x, agent.y, agent.z)
     inside_name = humanize_location_name(loc_def.name) if loc_def else "Outside"
 
-    notif_str = notifications.strip() if notifications and notifications.strip() else "None"
+    notif_str = (
+        _safe_prompt_text(notifications.strip(), 1800)
+        if notifications and notifications.strip()
+        else "None"
+    )
     nearby_people = _nearby_people_same_floor(agent, world)
     visible_objs = _visible_objects_here(agent) if loc_def else "None"
     nearby_doors = _nearest_entrances(agent) if not loc_def else "None"
@@ -323,7 +467,10 @@ def build_messages(agent_id: int, world, notifications: str) -> List[dict]:
 
     vm_inbox = getattr(agent, "voicemail_inbox", None) or []
     vm_count = len(vm_inbox)
-    vm_preview = _voicemail_preview(agent, max_show=15)
+    vm_preview = _voicemail_preview(agent, max_show=10)
+
+    partner = agent.relationship_partner if agent.relationship_partner else "None"
+    beliefs = _safe_prompt_text(agent.beliefs, 220)
 
     user_msg = (
         "Stats:\n"
@@ -337,30 +484,43 @@ def build_messages(agent_id: int, world, notifications: str) -> List[dict]:
         f"Hydration: {getattr(agent, 'hydration', 0.0):.0f}%\n"
         f"Stress: {agent.stress:.0f}%\n"
         f"Happiness: {agent.happiness:.0f}%\n"
+        f"Education: {agent.education:.0f}%\n"
+        f"Relationships: {agent.relationships:.1f} | Status: {agent.relationships_status} | Partner: {partner}\n"
+        f"Beliefs/Goals: {beliefs}\n"
         f"Current Activity: {agent.current_activity}\n"
         f"Held Item: {held}\n"
         f"Inv Count: {len(agent.inventory)}\n"
+        f"Inventory: {_inventory_line(agent)}\n"
         f"Food/Drink Owned: {_owned_food_and_drinks(agent)}\n"
         f"Nearby People: {nearby_people}\n"
         f"Visible Objects: {visible_objs}\n"
+        f"Nearby Ground Items: {_nearby_ground_items(agent, world)}\n"
+        f"Nearby Estates: {_nearby_estates(agent, world)}\n"
         f"Nearby Doors (if outside): {nearby_doors}\n"
         f"Nearby Locations/Hrs: {nearby_hours}\n"
         f"Vehicle: {_vehicle_line(agent)}\n"
         f"Market line: {market_status}, ${world.market_price:.4f}, stocks owned: {agent.shares_owned}\n"
+        f"Pending Market Orders: {_pending_market_orders_line(agent)}\n"
+        f"Pending Relationship Requests: {_pending_status_requests_line(agent)}\n"
         f"Voicemail Inbox: {vm_count} message(s)\n"
         f"Voicemails (most recent):\n{vm_preview}\n"
         f"{_task_line(agent)}\n"
-        f"Last Result: {agent.last_action_result}\n"
+        f"Last Result: {_safe_prompt_text(agent.last_action_result, 500)}\n"
         f"Notifications: {notif_str}\n"
     )
 
-    agent.chat_history.append({"role": "user", "content": user_msg})
-    return [{"role": "system", "content": system_content}] + agent.chat_history
+    return (
+        [{"role": "system", "content": system_content}]
+        + list(agent.chat_history)
+        + [{"role": "user", "content": user_msg}]
+    )
 
 
 def render_prompt(messages: list) -> str:
     template = jinja_env.get_template("template.jinja")
-    return template.render(messages=messages, tools=GLOBAL_TOOLS_LIST, add_generation_prompt=True)
+    return template.render(
+        messages=messages, tools=GLOBAL_TOOLS_LIST, add_generation_prompt=True
+    )
 
 
 def estimate_prompt_tokens(messages: list, prompt_text: Optional[str] = None) -> int:
@@ -375,16 +535,11 @@ _THINK_CLEAN_RE = re.compile(r"(</think>\s*){2,}", re.DOTALL)
 def _normalize_assistant_output(out: str) -> str:
     out = (out or "").strip()
     if not out:
-        return "<think>\n\n</think>\n"
+        return ""
+
     out = re.sub(_THINK_CLEAN_RE, "</think>\n", out)
 
     if "<think>" in out:
-        if "</think>" not in out:
-            if "<tool_call>" in out:
-                before, after = out.split("<tool_call>", 1)
-                out = before.rstrip() + "\n</think>\n\n<tool_call>" + after
-            else:
-                out = out.rstrip() + "\n</think>"
         return out
 
     if "<tool_call>" in out:
@@ -392,9 +547,9 @@ def _normalize_assistant_output(out: str) -> str:
         reasoning = reasoning.strip()
         if reasoning:
             return f"<think>\n{reasoning}\n</think>\n\n<tool_call>{rest}"
-        return f"<think>\n\n</think>\n\n<tool_call>{rest}"
+        return f"<tool_call>{rest}"
 
-    return f"<think>\n{out}\n</think>"
+    return out
 
 
 def manage_slot(agent_id: int, action: str):
@@ -405,14 +560,18 @@ def manage_slot(agent_id: int, action: str):
 
     url = f"{SERVER_URL}/slots/0?action={action}"
     data = json.dumps({"filename": f"agent_{agent_id}.bin"}).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(
+        url, data=data, headers={"Content-Type": "application/json"}
+    )
     try:
         urllib.request.urlopen(req)
     except urllib.error.URLError:
         pass
 
 
-def call_server(messages: list, agent_id: int, prompt_text: Optional[str] = None) -> tuple:
+def call_server(
+    messages: list, agent_id: int, prompt_text: Optional[str] = None
+) -> tuple:
     manage_slot(agent_id, action="restore")
     if prompt_text is None:
         prompt_text = render_prompt(messages)
@@ -438,8 +597,12 @@ def call_server(messages: list, agent_id: int, prompt_text: Optional[str] = None
         with urllib.request.urlopen(req) as res:
             res_data = json.loads(res.read().decode("utf-8"))
             out = _normalize_assistant_output(res_data.get("content", ""))
-            prompt_tokens = res_data.get("tokens_evaluated", max(1, len(prompt_text) // CHARS_PER_TOKEN))
-            gen_tokens = res_data.get("tokens_predicted", max(1, len(out) // CHARS_PER_TOKEN))
+            prompt_tokens = res_data.get(
+                "tokens_evaluated", max(1, len(prompt_text) // CHARS_PER_TOKEN)
+            )
+            gen_tokens = res_data.get(
+                "tokens_predicted", max(1, len(out) // CHARS_PER_TOKEN)
+            )
             manage_slot(agent_id, action="save")
             return out, prompt_tokens, gen_tokens
     except Exception as e:

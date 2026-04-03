@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from tooling.helpers import canonicalize_item_name, has_item_index
-from tooling.catalogs import HOBBY_ITEMS
+from python.tooling.helpers import canonicalize_item_name, has_item_index
+from python.tooling.catalogs import HOBBY_ITEMS
 
 
 def handle_sleep(agent, world, args: dict):
@@ -13,31 +13,21 @@ def handle_sleep(agent, world, args: dict):
     hours = max(1.0, min(12.0, hours))
     time_cost = int(hours * 3600)
 
-    from locations import get_current_location_def
-
-    loc_def = get_current_location_def(agent.x, agent.y, agent.z)
-    is_home = bool(loc_def and loc_def.name == agent.home_location)
-
     agent.awake_hours = 0
     agent.is_sleeping = True
     agent.current_activity = "sleeping"
+    # Item 8 fix: record sleep start time so _refresh_agent_activity can
+    # compute prorated energy/stress recovery at wake-up.
+    agent._sleep_start = world.sim_time
+    # Item 8 fix: record sleep start time so _refresh_agent_activity can
+    # compute prorated energy/stress recovery at wake-up.
+    agent._sleep_start = world.sim_time
 
-    energy_gain = hours * 10.0
-    if is_home:
-        agent.energy = min(100.0, agent.energy + energy_gain)
-    else:
-        # poorer sleep outside home
-        agent.energy = max(agent.energy, min(60.0, agent.energy + energy_gain))
-
-    agent.stress = max(0.0, agent.stress - (hours * 2.0))
-
-    msg = (
-        f"Sleep started for {hours:.1f}h. You will be unavailable (DND) until you wake. "
-        f"Energy: {agent.energy:.1f}."
+    return (
+        f"Sleep started for {hours:.1f}h. You will be unavailable (DND) until you wake.",
+        True,
+        time_cost,
     )
-    if not is_home:
-        msg += " (Poor sleep outside home: recovery capped at 60%)."
-    return msg, True, time_cost
 
 
 def handle_do_hobby(agent, world, args: dict):
@@ -45,8 +35,10 @@ def handle_do_hobby(agent, world, args: dict):
     item_data = None
     source = None
 
-    # hand
-    if agent.currently_holding and agent.currently_holding["item"].lower() == item.lower():
+    if (
+        agent.currently_holding
+        and agent.currently_holding["item"].lower() == item.lower()
+    ):
         item_data = agent.currently_holding
         source = "hand"
     else:

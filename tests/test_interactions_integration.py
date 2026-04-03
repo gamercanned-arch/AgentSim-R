@@ -17,7 +17,6 @@ def make_world_two_agents():
     a = AgentState(id=0, name="Alice", age=30)
     b = AgentState(id=1, name="Bob", age=30)
 
-    # Keep them outside any location box to avoid "same-floor location" gating
     a.x = a.y = 10.0
     a.z = 0.0
     b.x = b.y = 10.0
@@ -38,8 +37,6 @@ def test_voicemail_left_when_target_sleeping_and_shown_after_wake(temp_logs, mon
     import python.scheduler
 
     w, a, b = make_world_two_agents()
-
-    # Bob is sleeping for 2 minutes.
     b.is_sleeping = True
     b.busy_until = 120.0
 
@@ -55,14 +52,10 @@ def test_voicemail_left_when_target_sleeping_and_shown_after_wake(temp_logs, mon
     stub = StubServer(plans)
     monkeypatch.setattr(python.scheduler, "call_server", stub)
 
-    # Tick 1: Alice calls Bob (voicemail).
     python.scheduler.run_tick(w)
     assert len(getattr(b, "voicemail_inbox", [])) == 1
 
-    # Tick 2: Alice sleeps 1h so Bob becomes next to act at t=120.
     python.scheduler.run_tick(w)
-
-    # Tick 3: Bob wakes and acts; his observation should show voicemail.
     python.scheduler.run_tick(w)
     obs = last_user_observation(stub.last_messages[1])
     assert "Voicemail Inbox: 1 message(s)" in obs
@@ -92,14 +85,14 @@ def test_give_item_queued_to_sleeping_target_delivered_on_wake(temp_logs, monkey
     stub = StubServer(plans)
     monkeypatch.setattr(python.scheduler, "call_server", stub)
 
-    python.scheduler.run_tick(w)  # queue delivery
-    assert not any(it["item"] == "Book" for it in a.inventory), "escrow should remove item from sender immediately"
+    python.scheduler.run_tick(w)
+    assert not any(it["item"] == "Book" for it in a.inventory)
     assert hasattr(w, "pending_deliveries") and len(w.pending_deliveries) == 1
 
-    python.scheduler.run_tick(w)  # Alice sleeps
-    python.scheduler.run_tick(w)  # Bob wakes; delivery processed before his observation
+    python.scheduler.run_tick(w)
+    python.scheduler.run_tick(w)
 
-    assert any(it["item"] == "Book" for it in b.inventory), "item should be delivered to recipient on wake"
+    assert any(it["item"] == "Book" for it in b.inventory)
     obs = last_user_observation(stub.last_messages[1])
     assert "Received queued item delivery" in obs or "queued item" in obs.lower()
 
@@ -111,7 +104,6 @@ def test_give_item_cancelled_if_recipient_inventory_full_item_returned_to_sender
     w, a, b = make_world_two_agents()
     a.inventory.append({"id": "i1", "item": "Book", "durability": 5, "bought": 0.0})
 
-    # Fill Bob's inventory completely.
     for i in range(MAX_INVENTORY):
         b.inventory.append({"id": f"junk{i}", "item": "Snacks", "durability": 1, "bought": 0.0})
 
@@ -130,56 +122,42 @@ def test_give_item_cancelled_if_recipient_inventory_full_item_returned_to_sender
     stub = StubServer(plans)
     monkeypatch.setattr(python.scheduler, "call_server", stub)
 
-    python.scheduler.run_tick(w)  # queue
+    python.scheduler.run_tick(w)
     assert not any(it["item"] == "Book" for it in a.inventory)
     assert len(w.pending_deliveries) == 1
 
-    python.scheduler.run_tick(w)  # Alice sleeps
-    python.scheduler.run_tick(w)  # Bob wakes; delivery should cancel and refund item
+    python.scheduler.run_tick(w)
+    python.scheduler.run_tick(w)
 
-    assert not any(it["item"] == "Book" for it in b.inventory), "recipient should not receive item when inventory full"
-    assert any(it["item"] == "Book" for it in a.inventory), "item should be returned to sender on cancel"
+    assert not any(it["item"] == "Book" for it in b.inventory)
+    assert any(it["item"] == "Book" for it in a.inventory)
     assert len(w.pending_deliveries) == 0
 
-    # Bob observation should mention cancellation (substring-based; passive notifs may exist too).
     obs = last_user_observation(stub.last_messages[1]).lower()
     assert "cancel" in obs or "inventory was full" in obs
 
 
-def test_queued_money_refunded_if_recipient_dies_before_delivery(temp_logs, monkeypatch):
+def test_give_money_remote_immediate_even_if_target_sleeping(temp_logs, monkeypatch):
     import python.scheduler
 
     w, a, b = make_world_two_agents()
     a.money = 1000.0
-
     b.is_sleeping = True
     b.busy_until = 120.0
-    b.health = 1.0  # ensure kill on first hit
-    b.money = 0.0   # avoid auto-loot changing sender money; we want to test refund-only
-
-    # Deterministic damage
-    monkeypatch.setattr(random, "uniform", lambda lo, hi: 5.0)
+    b.x = 3000.0
+    b.y = 3000.0
 
     plans = {
         0: [
             tool_xml("give_money", person="Bob", amount="100"),
-            tool_xml("attack_person", person="Bob"),
-            tool_xml("change_status", person="", type="", value="after-refund"),
         ],
     }
     stub = StubServer(plans)
     monkeypatch.setattr(python.scheduler, "call_server", stub)
 
-    python.scheduler.run_tick(w)  # queued money (escrow now)
-    assert a.money == pytest.approx(900.0)
-    assert len(w.pending_deliveries) == 1
-
-    python.scheduler.run_tick(w)  # attack kills Bob
-    assert not b.alive
-
-    # Next tick processes pending deliveries and refunds (recipient dead)
     python.scheduler.run_tick(w)
-    assert a.money == pytest.approx(1000.0)
+    assert a.money == pytest.approx(900.0)
+    assert b.money == pytest.approx(600.0)
     assert len(w.pending_deliveries) == 0
 
 
@@ -187,7 +165,6 @@ def test_notification_drip_only_consumes_shown(temp_logs, monkeypatch):
     import python.scheduler
 
     w, a, b = make_world_two_agents()
-    # Keep only Alice alive for this test
     b.alive = False
 
     a.pending_notifications = [f"n{i}" for i in range(20)]
@@ -199,7 +176,7 @@ def test_notification_drip_only_consumes_shown(temp_logs, monkeypatch):
     monkeypatch.setattr(python.scheduler, "call_server", stub)
 
     python.scheduler.run_tick(w)
-    assert len(a.pending_notifications) == 8, "default drip shows/consumes 12 and keeps remaining queued"
+    assert len(a.pending_notifications) == 8
 
 
 def test_attack_sleeping_target_succeeds_and_wakes(temp_logs, monkeypatch):
@@ -207,7 +184,7 @@ def test_attack_sleeping_target_succeeds_and_wakes(temp_logs, monkeypatch):
 
     w, a, b = make_world_two_agents()
     b.is_sleeping = True
-    b.busy_until = 9999.0  # sleeping far into the future; should still be attackable
+    b.busy_until = 9999.0
 
     monkeypatch.setattr(random, "uniform", lambda lo, hi: 5.0)
 
@@ -253,18 +230,17 @@ def test_attack_time_busy_non_task_target_fails(temp_logs, monkeypatch):
     w, a, b = make_world_two_agents()
     b.task_state = "idle"
     b.is_sleeping = False
-    b.busy_until = 1000.0  # busy for other reason
+    b.busy_until = 1000.0
 
     plans = {0: [tool_xml("attack_person", person="Bob")]}
     stub = StubServer(plans)
     monkeypatch.setattr(python.scheduler, "call_server", stub)
 
     python.scheduler.run_tick(w)
-    # Should remain uninjured
     assert b.health == pytest.approx(100.0)
 
 
-def test_change_status_queued_while_target_sleeping_requires_proximity(temp_logs, monkeypatch):
+def test_change_status_sleeping_target_fails_and_does_not_queue(temp_logs, monkeypatch):
     import python.scheduler
 
     w, a, b = make_world_two_agents()
@@ -278,4 +254,4 @@ def test_change_status_queued_while_target_sleeping_requires_proximity(temp_logs
     monkeypatch.setattr(python.scheduler, "call_server", stub)
 
     python.scheduler.run_tick(w)
-    assert b.pending_status_requests.get("alice") == "dating"
+    assert b.pending_status_requests.get("alice") is None

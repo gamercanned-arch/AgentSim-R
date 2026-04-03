@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from config import (
+from python.config import (
     MARKET_CLOSE_HOUR,
     MARKET_CLOSE_MINUTE,
     MARKET_OPEN_HOUR,
@@ -11,7 +11,7 @@ from config import (
 )
 
 WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-SIM_START_DATE = date(2026, 3, 30)  # Monday
+SIM_START_DATE = date(2026, 3, 30)
 
 
 @dataclass(frozen=True)

@@ -4,11 +4,8 @@ import os
 from copy import deepcopy
 from datetime import datetime, timezone
 
-from config import LOG_DIR
+from python.config import LOG_DIR
 
-# Logging controls:
-# - default: do NOT write full prompts/history every turn (keeps logs small)
-# - set LOG_FULL_MESSAGES=1 to restore old behavior
 LOG_FULL_MESSAGES = str(os.environ.get("LOG_FULL_MESSAGES", "0")).lower() in ("1", "true", "yes")
 LOG_MAX_CHARS = int(os.environ.get("LOG_MAX_CHARS", "6000"))
 
@@ -23,11 +20,8 @@ except OSError as e:
 
 def _write(path: str, data: dict) -> None:
     data["timestamp"] = datetime.now(timezone.utc).isoformat()
-    try:
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(data, ensure_ascii=False) + "\n")
-    except OSError as e:
-        print(f"[LOGGER ERROR] Could not write to {path}: {e}")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(data, ensure_ascii=False) + "\n")
 
 
 def _clean_item(item):
@@ -49,9 +43,6 @@ def _sha16(text: str) -> str:
 
 
 def _summarize_messages(messages: list) -> dict:
-    """
-    Return a compact summary of messages, without storing the full system prompt / full history.
-    """
     if not messages:
         return {"message_count": 0}
 
@@ -65,7 +56,6 @@ def _summarize_messages(messages: list) -> dict:
         role_counts[role] = role_counts.get(role, 0) + 1
 
         if role == "system":
-            # Hash only; system prompts can be huge
             system_hash = _sha16(m.get("content", ""))
         elif role == "user":
             last_user = m.get("content", "") or last_user
@@ -82,10 +72,6 @@ def _summarize_messages(messages: list) -> dict:
 
 
 def _extract_system_user(messages: list) -> tuple[str, str]:
-    """
-    Convenience extractor so logs can always contain explicit system/user fields,
-    even when LOG_FULL_MESSAGES=0.
-    """
     system = ""
     last_user = ""
     for m in messages or []:
@@ -165,8 +151,8 @@ def log_turn(
     notifications: str,
     messages: list,
     raw_output: str,
-    parsed_tool: str,
-    parsed_args: dict,
+    parsed_tool,
+    parsed_args,
     result: str,
     success: bool,
     cost: int,
@@ -221,10 +207,6 @@ def log_io(
     prompt_hash: str = "",
     prompt_chars: int = 0,
 ) -> None:
-    """
-    Dataset-like IO logging. Defaults to summarized prompt to avoid huge logs.
-    Set LOG_FULL_MESSAGES=1 to store full prompt/messages.
-    """
     system_prompt, user_observation = _extract_system_user(messages)
 
     io_entry = {

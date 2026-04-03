@@ -2,7 +2,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from locations import get_home_lots_inventory
+from python.locations import get_home_lots_inventory
 
 
 @dataclass
@@ -73,7 +73,6 @@ class AgentState:
     vehicle_y: float = 0.0
     vehicle_z: float = 0.0
 
-    # Voicemail persistence
     voicemail_inbox: List[Dict[str, Any]] = field(default_factory=list)
 
     first_turn: bool = True
@@ -96,15 +95,10 @@ class WorldState:
         self.global_news: List[str] = []
         self.store_inventory: Dict[str, int] = {}
         self.last_restock_time: float = 0.0
-
-        # New: separate market tick clock (advanced in scheduler)
         self.last_market_tick: float = 0.0
-
         self.vacant_home_lots: Dict[str, List[str]] = get_home_lots_inventory()
         self.ground_items: List[Dict[str, Any]] = []
         self.corpse_estates: List[Dict[str, Any]] = []
-
-        # queued deliveries for give_item / give_money when target is busy/sleeping
         self.pending_deliveries: List[Dict[str, Any]] = []
 
     def allocate_home_lot(self, home_type: str, prefer_floor1: bool = False) -> Optional[str]:

@@ -3,13 +3,9 @@ from __future__ import annotations
 import re
 from typing import Optional, Tuple
 
-from config import MAX_INVENTORY, OBJECT_Z_TOLERANCE, STATUS_MAX_DISTANCE, WORKPLACE_MAX_DISTANCE
-from locations import LOCATIONS_3D, get_current_location_def, get_distance_3d, get_location_by_name, is_home_location
-from tooling.catalogs import ITEM_CATALOG, VEHICLE_CATALOG, WORKPLACE_BY_JOB
-
-# -------------------------
-# Text normalization / canonicalization
-# -------------------------
+from python.config import MAX_INVENTORY, OBJECT_Z_TOLERANCE, STATUS_MAX_DISTANCE, WORKPLACE_MAX_DISTANCE
+from python.locations import LOCATIONS_3D, get_current_location_def, get_distance_3d
+from python.tooling.catalogs import ITEM_CATALOG, VEHICLE_CATALOG, WORKPLACE_BY_JOB
 
 _WS_RE = re.compile(r"\s+")
 _PARENS_TAIL_RE = re.compile(r"\s*\([^)]*\)\s*$")
@@ -99,10 +95,6 @@ def find_agent_by_name(world, name: str):
     return next((a for a in world.agents.values() if normalize_label(a.name) == wanted), None)
 
 
-# -------------------------
-# Open hours
-# -------------------------
-
 def check_open_hours(loc, sim_time: float) -> bool:
     if not loc:
         return True
@@ -137,10 +129,6 @@ def seconds_until_close(loc, sim_time: float) -> float:
     return 0.0
 
 
-# -------------------------
-# Agent availability / reachability
-# -------------------------
-
 def is_busy(target_agent, sim_time: float) -> bool:
     if not target_agent.alive:
         return True
@@ -172,10 +160,6 @@ def can_physically_reach_person(agent, target, max_distance: float) -> Tuple[boo
     return True, ""
 
 
-# -------------------------
-# Inventory helpers
-# -------------------------
-
 def has_item_index(agent, item_name: str) -> int:
     wanted = normalize_label(item_name)
     for i, it in enumerate(agent.inventory):
@@ -199,10 +183,6 @@ def store_currently_holding_if_possible(agent) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
-# -------------------------
-# Economy helpers
-# -------------------------
-
 def record_expense(agent, amount: float) -> None:
     if amount <= 0:
         return
@@ -222,10 +202,6 @@ def validate_shares(raw) -> Tuple[int, Optional[str]]:
     except (ValueError, TypeError):
         return 0, "Invalid number of shares."
 
-
-# -------------------------
-# Workplace resolution
-# -------------------------
 
 def resolve_workplace_name(job_raw: str, agent) -> Optional[str]:
     lowered = normalize_label(job_raw)

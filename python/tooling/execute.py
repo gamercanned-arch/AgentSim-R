@@ -1,24 +1,25 @@
 from __future__ import annotations
 
+import json
 from typing import Callable, Dict, Tuple
 
-from tooling.parsing import parse_tool_call
+from python.config import TOOLS_PATH
+from python.tooling.parsing import parse_tool_calls
 
-# Handlers
-from tooling.handlers.movement import handle_move_to, handle_walk
-from tooling.handlers.workstudy import (
+from python.tooling.handlers.movement import handle_move_to, handle_walk
+from python.tooling.handlers.workstudy import (
     handle_get_education,
     handle_interact_with,
     handle_work_job,
 )
-from tooling.handlers.economy import (
+from python.tooling.handlers.economy import (
     handle_buy_item,
     handle_buy_stock,
     handle_eat_food,
     handle_seek_medicalcare,
     handle_sell_stock,
 )
-from tooling.handlers.social import (
+from python.tooling.handlers.social import (
     handle_attack_person,
     handle_call_person,
     handle_change_status,
@@ -26,13 +27,13 @@ from tooling.handlers.social import (
     handle_give_money,
     handle_talk_to,
 )
-from tooling.handlers.inventory_loot import (
+from python.tooling.handlers.inventory_loot import (
     handle_drop_item,
     handle_hold_item,
     handle_pick_item,
     try_auto_collect_loot,
 )
-from tooling.handlers.needs import (
+from python.tooling.handlers.needs import (
     handle_do_hobby,
     handle_sleep,
 )
@@ -63,18 +64,64 @@ REGISTRY: Dict[str, ToolHandler] = {
     "attack_person": handle_attack_person,
 }
 
-TASK_ALLOWED = {"interact_with", "pick_item", "hold_item", "drop_item"}
+TASK_ALLOWED = {"interact_with", "pick_item"}
+
+FALLBACK_TOOL_SCHEMAS: Dict[str, set[str]] = {
+    "talk_to": {"person", "message"},
+    "eat_food": {"item"},
+    "buy_item": {"item"},
+    "work_job": {"jobname", "hours"},
+    "get_education": {"type", "hours"},
+    "seek_medicalcare": set(),
+    "move_to": {"place"},
+    "walk": {"direction"},
+    "call_person": {"person", "message"},
+    "interact_with": {"person_or_object", "action"},
+    "change_status": {"person", "type", "value"},
+    "attack_person": {"person"},
+    "buy_stock": {"shares"},
+    "sell_stock": {"shares"},
+    "sleep": {"hours"},
+    "do_hobby": {"item"},
+    "give_item": {"person", "item"},
+    "give_money": {"person", "amount"},
+    "pick_item": {"item_name"},
+    "hold_item": {"item_name"},
+    "drop_item": {"item_name"},
+}
+
+try:
+    with open(TOOLS_PATH, encoding="utf-8") as f:
+        _tools = json.load(f).get("tools", [])
+except Exception:
+    _tools = []
+
+TOOL_SCHEMAS: Dict[str, set[str]] = dict(FALLBACK_TOOL_SCHEMAS)
+for t in _tools:
+    name = str(t.get("name", "")).strip()
+    if not name:
+        continue
+    TOOL_SCHEMAS[name] = set(t.get("params", []) or [])
 
 
-def execute_tool(tool_call_str: str, agent_id: int, world) -> Tuple[str, bool, int]:
-    name, args = parse_tool_call(tool_call_str)
+def _validate_schema(name: str, args: dict) -> str | None:
+    expected = TOOL_SCHEMAS.get(name)
+    if expected is None:
+        return f"Tool {name} not found."
 
-    agent = world.agents.get(agent_id)
-    if not agent:
-        return "Agent not found.", False, 0
-    if not agent.alive:
-        return "Agent inactive.", False, 0
+    provided = set((args or {}).keys())
+    missing = [p for p in expected if p not in provided]
+    if missing:
+        return f"Missing required parameter(s) for {name}: {', '.join(sorted(missing))}."
 
+    extras = [p for p in provided if p not in expected]
+    if extras:
+        return f"Unexpected parameter(s) for {name}: {', '.join(sorted(extras))}."
+
+    return None
+
+
+def _execute_one(name: str, args: dict, agent, world) -> Tuple[str, bool, int]:
     if agent.is_sleeping and world.sim_time >= agent.busy_until:
         agent.is_sleeping = False
         if agent.task_state == "idle":
@@ -82,15 +129,16 @@ def execute_tool(tool_call_str: str, agent_id: int, world) -> Tuple[str, bool, i
 
     try_auto_collect_loot(agent, world)
 
-    if isinstance(name, str) and name.startswith("Parse error"):
-        agent.last_parse_error = True
-        agent.failed_calls += 1
-        return name, False, 60
-    agent.last_parse_error = False
-
     if not name:
         agent.failed_calls += 1
+        agent.last_parse_error = True
         return "Parse error: No tool name.", False, 60
+
+    schema_err = _validate_schema(name, args or {})
+    if schema_err:
+        agent.failed_calls += 1
+        agent.last_parse_error = True
+        return schema_err, False, 60
 
     if agent.task_state != "idle" and name not in TASK_ALLOWED:
         agent.failed_calls += 1
@@ -105,4 +153,48 @@ def execute_tool(tool_call_str: str, agent_id: int, world) -> Tuple[str, bool, i
         agent.failed_calls += 1
         return f"Tool {name} not found.", False, 60
 
-    return handler(agent, world, args)
+    try:
+        return handler(agent, world, args)
+    except Exception as e:
+        agent.failed_calls += 1
+        return f"Tool {name} crashed: {type(e).__name__}: {e}", False, 60
+
+
+def execute_tool(tool_call_str: str, agent_id: int, world) -> Tuple[str, bool, int]:
+    calls, parse_error = parse_tool_calls(tool_call_str)
+
+    agent = world.agents.get(agent_id)
+    if not agent:
+        return "Agent not found.", False, 0
+    if not agent.alive:
+        return "Agent inactive.", False, 0
+
+    if parse_error:
+        agent.last_parse_error = True
+        agent.failed_calls += 1
+        return parse_error, False, 60
+
+    agent.last_parse_error = False
+
+    if not calls:
+        agent.failed_calls += 1
+        agent.last_parse_error = True
+        return "Parse error: No tool name.", False, 60
+
+    if len(calls) == 1:
+        name, args = calls[0]
+        return _execute_one(name, args, agent, world)
+
+    step_results = []
+    any_success = False
+    max_cost = 0
+
+    for idx, (name, args) in enumerate(calls, start=1):
+        res, suc, cost = _execute_one(name, args, agent, world)
+        any_success = any_success or suc
+        max_cost = max(max_cost, int(cost))
+        step_results.append(
+            f"{idx}. {name}: {'OK' if suc else 'FAIL'} - {res}"
+        )
+
+    return " | ".join(step_results), any_success, max_cost

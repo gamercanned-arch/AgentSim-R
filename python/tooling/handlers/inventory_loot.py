@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import uuid
 
-from config import (
+from python.config import (
     AUTO_LOOT_RADIUS,
     DROP_REPICKUP_COOLDOWN,
     GROUND_PICKUP_RADIUS,
     MAX_INVENTORY,
 )
-from locations import get_distance_3d
-from tooling.helpers import (
+from python.locations import get_current_location_def, get_distance_3d
+from python.tooling.helpers import (
     canonicalize_item_name,
     has_item_index,
     normalize_label,
@@ -29,7 +29,11 @@ def _task_failure(agent, message: str, cost: int = 30):
         agent.active_task_entities = {}
         if not agent.is_sleeping:
             agent.current_activity = "idle"
-        return f"{message} Task cancelled after 3 failed attempts. You may start over.", False, cost
+        return (
+            f"{message} Task cancelled after 3 failed attempts. You may start over.",
+            False,
+            cost,
+        )
 
     return f"{message} Failed attempts in this task: {task_failures}/3.", False, cost
 
@@ -48,7 +52,9 @@ def _find_ground_item(world, agent, item_name: str):
 def _corpse_item_nearby(world, agent, item_name: str) -> bool:
     wanted = normalize_label(item_name)
     for estate in world.corpse_estates:
-        d = get_distance_3d((agent.x, agent.y, agent.z), (estate["x"], estate["y"], estate["z"]))
+        d = get_distance_3d(
+            (agent.x, agent.y, agent.z), (estate["x"], estate["y"], estate["z"])
+        )
         if d > AUTO_LOOT_RADIUS:
             continue
         for it in estate.get("items", []):
@@ -59,7 +65,9 @@ def _corpse_item_nearby(world, agent, item_name: str) -> bool:
 
 def _remove_empty_estates(world) -> None:
     world.corpse_estates = [
-        e for e in world.corpse_estates if float(e.get("money", 0.0)) > 0.0 or e.get("items")
+        e
+        for e in world.corpse_estates
+        if float(e.get("money", 0.0)) > 0.0 or e.get("items")
     ]
 
 
@@ -68,7 +76,9 @@ def try_auto_collect_loot(agent, world) -> None:
         return
 
     for estate in list(world.corpse_estates):
-        d = get_distance_3d((agent.x, agent.y, agent.z), (estate["x"], estate["y"], estate["z"]))
+        d = get_distance_3d(
+            (agent.x, agent.y, agent.z), (estate["x"], estate["y"], estate["z"])
+        )
         if d > AUTO_LOOT_RADIUS:
             continue
 
@@ -85,7 +95,9 @@ def try_auto_collect_loot(agent, world) -> None:
             estate["money"] = 0.0
 
         if taken_items or taken_money > 0:
-            item_list = ", ".join(i["item"] for i in taken_items) if taken_items else "no items"
+            item_list = (
+                ", ".join(i["item"] for i in taken_items) if taken_items else "no items"
+            )
             agent.pending_notifications.append(
                 f"You automatically collected nearby estate loot: {item_list}. Cash recovered: ${taken_money:.2f}."
             )
@@ -106,7 +118,11 @@ def handle_hold_item(agent, world, args: dict):
             return "You aren't holding anything to store.", False, 30
         if agent.currently_holding.get("id") == "job_prop":
             agent.failed_calls += 1
-            return "You are holding a required task prop. Finish the task before storing it.", False, 30
+            return (
+                "You are holding a required task prop. Finish the task before storing it.",
+                False,
+                30,
+            )
         if len(agent.inventory) >= MAX_INVENTORY:
             agent.failed_calls += 1
             return "Inventory full. Cannot store held item.", False, 30
@@ -117,14 +133,20 @@ def handle_hold_item(agent, world, args: dict):
 
     item = canonicalize_item_name(raw_item)
 
-    if agent.currently_holding and normalize_label(agent.currently_holding["item"]) == normalize_label(item):
+    if agent.currently_holding and normalize_label(
+        agent.currently_holding["item"]
+    ) == normalize_label(item):
         return f"You are already holding {agent.currently_holding['item']}.", True, 5
 
     idx = has_item_index(agent, item)
     if idx == -1:
         if _find_ground_item(world, agent, item):
             agent.failed_calls += 1
-            return f"{item} is on the ground nearby. Use pick_item to pick it up.", False, 30
+            return (
+                f"{item} is on the ground nearby. Use pick_item to pick it up.",
+                False,
+                30,
+            )
         agent.failed_calls += 1
         return f"{item} is not in your inventory.", False, 30
 
@@ -149,13 +171,30 @@ def handle_pick_item(agent, world, args: dict):
     if agent.task_state == "job_pick":
         flavor = agent.pending_task_data.get("flavor", {}) or {}
         required = str(flavor.get("pick", "")).strip()
-        if not required:
+        workplace = str(agent.pending_task_data.get("workplace", "")).strip()
+        task_entities = getattr(agent, "active_task_entities", {}) or {}
+        active_prop = str(task_entities.get("prop", "")).strip()
+        here = get_current_location_def(agent.x, agent.y, agent.z)
+
+        if not required or not active_prop:
             agent.failed_calls += 1
             return _task_failure(agent, "Task is missing required prop.", 30)
 
-        if normalize_label(item) != normalize_label(required):
+        if not here or here.name != workplace:
             agent.failed_calls += 1
-            return _task_failure(agent, f"You need to pick up the required task prop {required}.", 30)
+            return _task_failure(
+                agent,
+                "You must remain in the correct task location to pick up the task prop.",
+                30,
+            )
+
+        if normalize_label(item) != normalize_label(required) or normalize_label(
+            item
+        ) != normalize_label(active_prop):
+            agent.failed_calls += 1
+            return _task_failure(
+                agent, f"You need to pick up the required task prop {required}.", 30
+            )
 
         ok, why = store_currently_holding_if_possible(agent)
         if not ok:
@@ -176,20 +215,31 @@ def handle_pick_item(agent, world, args: dict):
     action_word = normalize_label(raw_item)
     if action_word in {"none", "store", "unequip", "put away"}:
         agent.failed_calls += 1
-        return "pick_item only picks nearby ground items or required task props. Use hold_item to manage your hand.", False, 30
+        return (
+            "pick_item only picks nearby ground items or required task props. Use hold_item to manage your hand.",
+            False,
+            30,
+        )
 
     if has_item_index(agent, item) != -1:
         agent.failed_calls += 1
-        return f"{item} is already in your inventory. Use hold_item to put it in your hand.", False, 30
+        return (
+            f"{item} is already in your inventory. Use hold_item to put it in your hand.",
+            False,
+            30,
+        )
 
     ground_item = _find_ground_item(world, agent, item)
     if ground_item:
-        if (
-            ground_item.get("dropper_id") == agent.id
-            and world.sim_time < float(ground_item.get("repickup_block_until", 0.0))
+        if ground_item.get("dropper_id") == agent.id and world.sim_time < float(
+            ground_item.get("repickup_block_until", 0.0)
         ):
             agent.failed_calls += 1
-            return "You cannot re-pick your own dropped item yet. Wait a bit longer.", False, 30
+            return (
+                "You cannot re-pick your own dropped item yet. Wait a bit longer.",
+                False,
+                30,
+            )
 
         if agent.currently_holding:
             ok, why = store_currently_holding_if_possible(agent)
@@ -216,22 +266,64 @@ def handle_pick_item(agent, world, args: dict):
     if _corpse_item_nearby(world, agent, item):
         agent.failed_calls += 1
         return (
-            f"{item} is part of nearby estate loot. Estate loot is collected automatically when you are close enough. "
-            f"Check your inventory or make space first."
-        ), False, 30
+            (
+                f"{item} is part of nearby estate loot. Estate loot is collected automatically when you are close enough. "
+                f"Check your inventory or make space first."
+            ),
+            False,
+            30,
+        )
 
     agent.failed_calls += 1
     return f"Nearby ground item {item} not found.", False, 60
 
 
 def handle_drop_item(agent, world, args: dict):
-    item = canonicalize_item_name(str(args.get("item_name", "")).strip())
+    raw_item = str(args.get("item_name", "")).strip()
+    # Item 10 fix: empty or missing item_name acts as wildcard for the held
+    # item — the agent doesn't need to explicitly name it.
+    if not raw_item:
+        if agent.currently_holding:
+            if agent.currently_holding.get("id") == "job_prop":
+                agent.failed_calls += 1
+                return (
+                    "Do not drop the required task prop. Finish or cancel the task first.",
+                    False,
+                    30,
+                )
+            item_data = agent.currently_holding
+            agent.currently_holding = None
+            world.ground_items.append(
+                {
+                    "id": str(uuid.uuid4()),
+                    "item": item_data["item"],
+                    "durability": item_data.get("durability", 5),
+                    "bought": item_data.get("bought", world.sim_time),
+                    "x": float(agent.x),
+                    "y": float(agent.y),
+                    "z": float(agent.z),
+                    "dropper_id": agent.id,
+                    "repickup_block_until": world.sim_time + DROP_REPICKUP_COOLDOWN,
+                }
+            )
+            return f"Dropped {item_data['item']} on the ground.", True, 30
+        # No held item and no name — fall through to inventory search
+        item = ""
+    else:
+        item = canonicalize_item_name(raw_item)
+
     item_data = None
 
-    if agent.currently_holding and (not item or normalize_label(item) == normalize_label(agent.currently_holding["item"])):
+    if agent.currently_holding and normalize_label(item) == normalize_label(
+        agent.currently_holding["item"]
+    ):
         if agent.currently_holding.get("id") == "job_prop":
             agent.failed_calls += 1
-            return "Do not drop the required task prop. Finish or cancel the task first.", False, 30
+            return (
+                "Do not drop the required task prop. Finish or cancel the task first.",
+                False,
+                30,
+            )
         item_data = agent.currently_holding
         agent.currently_holding = None
     else:

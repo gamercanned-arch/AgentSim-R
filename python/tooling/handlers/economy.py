@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import uuid
 
-from core import is_market_open
-from config import MAX_INVENTORY
-from locations import (
+from python.core import is_market_open
+from python.config import MAX_INVENTORY
+from python.locations import (
     describe_home_location,
     get_current_location_def,
     get_location_by_name,
     get_location_center,
     get_location_outside_entrance_point,
 )
-from tooling.catalogs import ITEM_CATALOG, VEHICLE_CATALOG
-from tooling.helpers import (
+from python.tooling.catalogs import ITEM_CATALOG, VEHICLE_CATALOG
+from python.tooling.helpers import (
     canonicalize_food_name,
     canonicalize_item_name,
     check_open_hours,

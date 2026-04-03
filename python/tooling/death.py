@@ -3,10 +3,9 @@ from __future__ import annotations
 import os
 import uuid
 from copy import deepcopy
-from typing import Dict, Optional
 
-from config import CACHE_DIR
-from logger import log_death
+from python.config import CACHE_DIR
+from python.logger import log_death
 
 
 def liquidate_portfolio(agent, world) -> float:
@@ -29,14 +28,9 @@ def delete_agent_cache(agent_id: int) -> None:
 
 
 def kill_agent(target, world, cause: str = "unknown") -> None:
-    """
-    Creates a corpse estate, releases home lot, clears ownership fields,
-    liquidates shares to cash, logs death.
-    """
     if not target.alive:
         return
 
-    # Preserve non-task held item into inventory
     if target.currently_holding and target.currently_holding.get("id") != "job_prop":
         target.inventory.append(target.currently_holding)
     target.currently_holding = None
@@ -75,16 +69,13 @@ def kill_agent(target, world, cause: str = "unknown") -> None:
     }
     world.corpse_estates.append(estate)
 
-    # Release home lot back to market
     if target.current_home_type and target.home_location:
         world.release_home_lot(target.current_home_type, target.home_location)
 
-    # Clear ownership fields
     target.owned_locations = []
     target.current_home_type = ""
     target.home_location = ""
 
-    # Clear gameplay state
     target.inventory.clear()
     target.money = 0.0
     target.pending_market_orders.clear()

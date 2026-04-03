@@ -6,7 +6,12 @@ cache
 *pycache*/
 dir.py
 codebase.txt
-extract_t1.py
-prompt.log
 model_patch.txt
+.pytest_cache/
+prompt.log
+commits.txt
 patch.py
+.kilo
+.ruff_cache
+nul
+__pycache__

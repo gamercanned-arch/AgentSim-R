@@ -4,7 +4,7 @@ import math
 import re
 from typing import Optional, Tuple
 
-from locations import (
+from python.locations import (
     describe_home_location,
     get_current_location_def,
     get_distance_3d,
@@ -13,17 +13,17 @@ from locations import (
     get_location_outside_entrance_point,
     is_home_location,
 )
-from tooling.catalogs import VEHICLE_CATALOG
-from tooling.helpers import (
+from python.tooling.catalogs import VEHICLE_CATALOG
+from python.tooling.helpers import (
     canonicalize_place_name,
     check_open_hours,
     find_agent_by_name,
     normalize_label,
     record_expense,
 )
-from tooling.navigation import shortest_route_distance_m
+from python.tooling.navigation import shortest_route_distance_m
 
-VEHICLE_BOARD_MAX_DISTANCE = 100.0  # meters
+VEHICLE_BOARD_MAX_DISTANCE = 100.0
 
 _COORD_RE = re.compile(
     r"^\s*\(?\s*-?\d+(?:\.\d+)?\s*(?:,\s*|\s+)-?\d+(?:\.\d+)?(?:\s*(?:,\s*|\s+)-?\d+(?:\.\d+)?)?\s*\)?\s*$"
@@ -80,9 +80,16 @@ def _resolve_destination(place: str, raw_place: str, agent, world):
 
     target_loc = get_location_by_name(place)
     if target_loc:
-        owner = next((a for a in world.agents.values() if a.home_location == target_loc.name), None)
+        owner = next(
+            (a for a in world.agents.values() if a.home_location == target_loc.name),
+            None,
+        )
         if is_home_location(target_loc.name) and not raw_norm.startswith("home"):
-            return None, None, "Use a friendly home alias like Home_Taylor instead of an internal home location ID."
+            return (
+                None,
+                None,
+                "Use a friendly home alias like Home_Taylor instead of an internal home location ID.",
+            )
         return target_loc, owner, None
 
     if place_norm.startswith("home "):
@@ -91,7 +98,11 @@ def _resolve_destination(place: str, raw_place: str, agent, world):
             target_loc = get_location_by_name(alias_loc_name)
             return target_loc, home_owner, None
 
-    return None, None, f"Unknown place: '{raw_place}'. Use a named place like Library or Home_Taylor."
+    return (
+        None,
+        None,
+        f"Unknown place: '{raw_place}'. Use a named place like Library or Home_Taylor.",
+    )
 
 
 def _distance_to_vehicle(agent) -> float:
@@ -105,11 +116,19 @@ def handle_move_to(agent, world, args: dict):
     raw_place = str(args.get("place", ""))[:100].strip()
     if not raw_place:
         agent.failed_calls += 1
-        return "No destination provided. Use a named place like Library or Home_Taylor.", False, 60
+        return (
+            "No destination provided. Use a named place like Library or Home_Taylor.",
+            False,
+            60,
+        )
 
     if _looks_like_coordinates(raw_place):
         agent.failed_calls += 1
-        return "Coordinates are not valid move_to inputs. Use a named place like Library, Store_A, or Home_Taylor.", False, 60
+        return (
+            "Coordinates are not valid move_to inputs. Use a named place like Library, Store_A, or Home_Taylor.",
+            False,
+            60,
+        )
 
     place = canonicalize_place_name(raw_place, world)
     target_loc, home_owner, err = _resolve_destination(place, raw_place, agent, world)
@@ -146,37 +165,42 @@ def handle_move_to(agent, world, args: dict):
         if agent.money >= fuel_cost:
             mode = "vehicle"
         else:
-            # Move fuel fallback note into notification (not tool result string)
-            agent.pending_notifications.append(
-                f"Movement: Walked instead of riding because you could not afford fuel (${fuel_cost:.2f})."
+            agent.failed_calls += 1
+            return (
+                f"Cannot afford fuel for {vtype} travel (${fuel_cost:.2f}).",
+                False,
+                60,
             )
-            speed = walk_speed_mps
-            energy_per_m = walk_energy_per_m
-            fuel_cost = 0.0
-            mode = "walk"
-    else:
-        agent.pending_notifications.append(
-            f"Movement: Walked because your vehicle is {v_dist:.0f}m away."
-        )
 
     time_cost = max(60, int(dist_m / max(0.5, speed)))
     energy_drain = dist_m * energy_per_m
 
     if agent.energy < energy_drain:
         agent.failed_calls += 1
-        return f"Too exhausted to travel {dist_m:.0f}m. Need {energy_drain:.1f} Energy.", False, 60
+        return (
+            f"Too exhausted to travel {dist_m:.0f}m. Need {energy_drain:.1f} Energy.",
+            False,
+            60,
+        )
 
     agent.energy -= energy_drain
     if fuel_cost > 0:
         agent.money -= fuel_cost
         record_expense(agent, fuel_cost)
 
-    agent.x, agent.y, agent.z = float(outside_xyz[0]), float(outside_xyz[1]), float(outside_xyz[2])
-    agent.location = "Outside"
+    agent.x, agent.y, agent.z = (
+        float(outside_xyz[0]),
+        float(outside_xyz[1]),
+        float(outside_xyz[2]),
+    )
+    # Item 7 fix: include the building name in the location string so the
+    # agent knows which building they are outside of, not just "Outside".
+    agent.location = (
+        f"Outside {target_loc.name}" if target_loc.has_roof else target_loc.name
+    )
     agent.current_activity = "moving"
 
     if mode == "vehicle":
-        agent.vehicle_x, agent.vehicle_y, agent.vehicle_z = agent.x, agent.agent_y if False else agent.y, agent.z  # keep stable
         agent.vehicle_x, agent.vehicle_y, agent.vehicle_z = agent.x, agent.y, agent.z
 
     dx = entrance_xyz[0] - outside_xyz[0]
@@ -187,14 +211,18 @@ def handle_move_to(agent, world, args: dict):
     will_be_open = check_open_hours(target_loc, world.sim_time + time_cost)
     status_hint = ""
     if not will_be_open and not is_home_location(target_loc.name):
-        status_hint = " The place will be CLOSED when you arrive (you can still wait outside)."
+        status_hint = (
+            " The place will be CLOSED when you arrive (you can still wait outside)."
+        )
 
     label = target_loc.name
     if is_home_location(target_loc.name):
         if home_owner and home_owner.id == agent.id:
             label = f"Home_{agent.name} ({describe_home_location(target_loc.name)})"
         elif home_owner:
-            label = f"Home_{home_owner.name} ({describe_home_location(target_loc.name)})"
+            label = (
+                f"Home_{home_owner.name} ({describe_home_location(target_loc.name)})"
+            )
         else:
             label = describe_home_location(target_loc.name)
 
@@ -202,9 +230,16 @@ def handle_move_to(agent, world, args: dict):
     if fuel_cost > 0:
         cost_hint += f", -${fuel_cost:.2f} fuel"
 
+    if target_loc.has_roof:
+        return (
+            f"Travelled to entrance area of {label} by {mode} ({dist_m:.0f}m; {cost_hint}). "
+            f"Door is ~{door_dist:.0f}m {direction} of you.{status_hint}",
+            True,
+            time_cost,
+        )
+
     return (
-        f"Travelled to entrance area of {label} by {mode} ({dist_m:.0f}m; {cost_hint}). "
-        f"Door is ~{door_dist:.0f}m {direction} of you.{status_hint}",
+        f"Travelled to {label} by {mode} ({dist_m:.0f}m; {cost_hint}).{status_hint}",
         True,
         time_cost,
     )
@@ -213,30 +248,38 @@ def handle_move_to(agent, world, args: dict):
 def _entering_locked_home(agent, new_loc_name: str, world) -> Optional[str]:
     if not is_home_location(new_loc_name):
         return None
-    if new_loc_name == agent.home_location:
+
+    owned = set(getattr(agent, "owned_locations", []) or [])
+    if new_loc_name == agent.home_location or new_loc_name in owned:
         return None
 
-    owner = next((a for a in world.agents.values() if a.alive and a.home_location == new_loc_name), None)
-    if not owner:
-        return "This home appears locked."
-
-    owner_loc = get_current_location_def(owner.x, owner.y, owner.z)
-    if not owner_loc or owner_loc.name != owner.home_location:
-        return f"{owner.name} is not home. Door is locked."
-    return None
+    owner = next(
+        (
+            a
+            for a in world.agents.values()
+            if a.alive and a.home_location == new_loc_name
+        ),
+        None,
+    )
+    if owner:
+        return f"{owner.name}'s home is private and locked."
+    return "This home is private and locked."
 
 
 def handle_walk(agent, world, args: dict):
     direction = str(args.get("direction", "")).strip().lower()
+    # Item 12 fix: use 30/sqrt(2) ≈ 21.213 for diagonal displacement
+    # instead of rounded 21, to prevent cumulative positional drift.
+    _diag = 30.0 / math.sqrt(2)
     delta_map = {
         "north": (0, 30),
         "south": (0, -30),
         "east": (30, 0),
         "west": (-30, 0),
-        "northeast": (21, 21),
-        "northwest": (-21, 21),
-        "southeast": (21, -21),
-        "southwest": (-21, -21),
+        "northeast": (_diag, _diag),
+        "northwest": (-_diag, _diag),
+        "southeast": (_diag, -_diag),
+        "southwest": (-_diag, -_diag),
     }
     delta = delta_map.get(direction)
     if not delta:

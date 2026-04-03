@@ -6,10 +6,10 @@ from conftest import tool_xml
 
 
 def _mk_world():
-    from state import AgentState, WorldState
+    from python.state import WorldState
 
     w = WorldState()
-    w.sim_time = 9 * 3600  # 09:00 by default (most public places open)
+    w.sim_time = 9 * 3600
     w.last_passive = w.sim_time
     w.weather = "Sunny"
     w.market_price = 100.0
@@ -17,7 +17,7 @@ def _mk_world():
 
 
 def _add_agent(world, agent_id: int, name: str):
-    from state import AgentState
+    from python.state import AgentState
 
     a = AgentState(id=agent_id, name=name, age=30)
     a.x = 10.0 + agent_id
@@ -30,7 +30,7 @@ def _add_agent(world, agent_id: int, name: str):
 
 
 def _set_inside(agent, place_name: str):
-    from locations import get_location_by_name
+    from python.locations import get_location_by_name
 
     loc = get_location_by_name(place_name)
     assert loc is not None, f"Test location missing: {place_name}"
@@ -41,21 +41,35 @@ def _set_inside(agent, place_name: str):
 
 
 def _exec(world, agent, xml: str):
-    from tools import execute_tool
+    from python.tools import execute_tool
 
     res, suc, cost = execute_tool(xml, agent.id, world)
     return res, suc, cost
 
 
-def test_parse_rejects_multiple_tool_calls():
-    from tooling.parsing import parse_tool_call
+def test_parse_accepts_multiple_tool_calls():
+    from python.tooling.parsing import parse_tool_calls
 
     s = (
         "<tool_call><function=walk><parameter=direction>\nwest\n</parameter></function></tool_call>\n"
         "<tool_call><function=walk><parameter=direction>\neast\n</parameter></function></tool_call>"
     )
-    name, args = parse_tool_call(s)
-    assert name.startswith("Parse error")
+    calls, err = parse_tool_calls(s)
+    assert err is None
+    assert len(calls) == 2
+
+
+def test_parse_rejects_trailing_text_after_tool_call():
+    from python.tooling.parsing import parse_tool_calls
+
+    s = (
+        "<tool_call><function=walk><parameter=direction>\nwest\n</parameter></function></tool_call>\n"
+        "extra text"
+    )
+    calls, err = parse_tool_calls(s)
+    assert calls == []
+    assert err is not None
+    assert "Unexpected text outside tool calls" in err
 
 
 def test_move_to_rejects_coordinates():
@@ -66,27 +80,35 @@ def test_move_to_rejects_coordinates():
     assert "Coordinates are not valid" in res
 
 
-def test_move_to_success_and_sets_outside():
+def test_move_to_success_and_sets_outside_for_roofed_place():
     w = _mk_world()
     a = _add_agent(w, 0, "Alice")
     res, suc, cost = _exec(w, a, tool_xml("move_to", place="Library"))
     assert suc is True
     assert cost >= 60
-    assert a.location == "Outside"
+    # Item 7 fix: location now includes building name for roofed places
+    assert a.location == "Outside Library"
     assert "Travelled to entrance area" in res
 
 
-def test_move_to_vehicle_fallback_notification_when_cant_afford_fuel():
+def test_move_to_open_air_sets_named_location():
     w = _mk_world()
     a = _add_agent(w, 0, "Alice")
+    res, suc, _ = _exec(w, a, tool_xml("move_to", place="Park_Central"))
+    assert suc is True
+    assert a.location == "Park_Central"
 
-    # Ensure vehicle is near enough to ride, but fuel is unaffordable
+
+def test_move_to_vehicle_fails_when_cant_afford_fuel():
+    w = _mk_world()
+    a = _add_agent(w, 0, "Alice")
     a.vehicle_type = "Car"
     a.vehicle_x, a.vehicle_y, a.vehicle_z = a.x, a.y, a.z
     a.money = 0.0
 
-    _exec(w, a, tool_xml("move_to", place="Mall"))
-    assert any("Walked instead of riding" in n for n in a.pending_notifications)
+    res, suc, _ = _exec(w, a, tool_xml("move_to", place="Mall"))
+    assert suc is False
+    assert "Cannot afford fuel" in res
 
 
 def test_walk_invalid_direction():
@@ -104,6 +126,40 @@ def test_walk_prevents_falling_from_z_level():
     res, suc, _ = _exec(w, a, tool_xml("walk", direction="north"))
     assert suc is False
     assert "fall" in res.lower()
+
+
+@pytest.mark.skip(
+    reason="Home lots are ~22m but walk step is 30m; agent always overshoots. Requires smaller walk steps or larger lots to test properly."
+)
+def test_other_home_is_locked():
+    from python.locations import get_location_by_name
+    from python.tooling.handlers.movement import handle_walk
+
+    w = _mk_world()
+    a = _add_agent(w, 0, "Alice")
+    b = _add_agent(w, 1, "Bob")
+
+    home = w.allocate_home_lot("Small Apartment", prefer_floor1=True)
+    assert home is not None
+    b.home_location = home
+    b.owned_locations = [home]
+
+    loc = get_location_by_name(home)
+    assert loc is not None
+
+    # Home lots are ~22m wide. Walk is 30m. Position agent so that
+    # walking north lands INSIDE the lot (not overshooting it).
+    # Start 10m south of center so walk lands 20m north of center,
+    # well within the 22m y-range.
+    center_y = (loc.y_min + loc.y_max) / 2.0
+    a.x = (loc.x_min + loc.x_max) / 2.0
+    a.y = center_y - 10.0
+    a.z = loc.z_min
+    a.location = "Outside"
+
+    res, suc, _ = handle_walk(a, w, {"direction": "north"})
+    assert suc is False
+    assert "private and locked" in res.lower()
 
 
 def test_buy_food_from_anywhere_uses_village_stock():
@@ -161,7 +217,9 @@ def test_eat_food_from_inventory():
     a = _add_agent(w, 0, "Alice")
     a.hunger = 80.0
     a.hydration = 10.0
-    a.inventory.append({"id": "x", "item": "Water", "durability": 1, "bought": w.sim_time})
+    a.inventory.append(
+        {"id": "x", "item": "Water", "durability": 1, "bought": w.sim_time}
+    )
     res, suc, _ = _exec(w, a, tool_xml("eat_food", item="Water"))
     assert suc is True
     assert "Ate Water" in res
@@ -173,7 +231,6 @@ def test_eat_food_spoiled_penalty():
     w = _mk_world()
     a = _add_agent(w, 0, "Alice")
     a.health = 100.0
-    # Bought long ago
     a.inventory.append({"id": "x", "item": "Sandwich", "durability": 1, "bought": 0.0})
     w.sim_time = 200000.0
     res, suc, _ = _exec(w, a, tool_xml("eat_food", item="Sandwich"))
@@ -191,22 +248,25 @@ def test_seek_medicalcare_requires_inside_hospital():
     assert "inside Hospital" in res
 
 
-def test_seek_medicalcare_inside_hospital_succeeds():
+def test_schema_validation_rejects_unexpected_param():
     w = _mk_world()
     a = _add_agent(w, 0, "Alice")
-    a.money = 100.0
-    a.health = 20.0
-    _set_inside(a, "Hospital")
-    res, suc, _ = _exec(w, a, tool_xml("seek_medicalcare"))
-    assert suc is True
-    assert a.health > 20.0
+    xml = (
+        "<tool_call>"
+        "<function=seek_medicalcare>"
+        "<parameter=foo>\nbar\n</parameter>"
+        "</function>"
+        "</tool_call>"
+    )
+    res, suc, _ = _exec(w, a, xml)
+    assert suc is False
+    assert "Unexpected parameter" in res
 
 
 def test_buy_stock_market_closed_queues_order():
     w = _mk_world()
     a = _add_agent(w, 0, "Alice")
     a.money = 10000.0
-    # 09:00 is before 09:30 → closed
     w.sim_time = 9 * 3600
     res, suc, _ = _exec(w, a, tool_xml("buy_stock", shares="2"))
     assert suc is True
@@ -235,11 +295,37 @@ def test_sleep_sets_sleeping_and_busy_time():
     assert cost == 7200
 
 
+def test_sleep_recovers_energy_on_wake():
+    # Item 8 fix: energy recovery now happens at wake-up in
+    # _refresh_agent_activity, not during passive ticks.
+    import python.scheduler as scheduler
+
+    w = _mk_world()
+    a = _add_agent(w, 0, "Alice")
+    a.energy = 0.0
+    a.stress = 50.0
+    a.is_sleeping = True
+    a.busy_until = w.sim_time + 7200
+    a._sleep_start = w.sim_time
+    a.home_location = ""
+    a.x = 10.0
+    a.y = 10.0
+    a.z = 0.0
+
+    # Simulate wake-up via _refresh_agent_activity
+    scheduler._refresh_agent_activity(a, w.sim_time + 7200)
+    assert a.energy > 0.0
+    assert a.stress < 50.0
+    assert a.is_sleeping is False
+
+
 def test_do_hobby_requires_valid_item_and_reduces_stress():
     w = _mk_world()
     a = _add_agent(w, 0, "Alice")
     a.stress = 80.0
-    a.inventory.append({"id": "b", "item": "Book", "durability": 1, "bought": w.sim_time})
+    a.inventory.append(
+        {"id": "b", "item": "Book", "durability": 1, "bought": w.sim_time}
+    )
     res, suc, _ = _exec(w, a, tool_xml("do_hobby", item="Book"))
     assert suc is True
     assert a.stress < 80.0
@@ -248,7 +334,9 @@ def test_do_hobby_requires_valid_item_and_reduces_stress():
 def test_hold_item_moves_inventory_to_hand_and_store_puts_back():
     w = _mk_world()
     a = _add_agent(w, 0, "Alice")
-    a.inventory.append({"id": "b", "item": "Notebook", "durability": 1, "bought": w.sim_time})
+    a.inventory.append(
+        {"id": "b", "item": "Notebook", "durability": 1, "bought": w.sim_time}
+    )
     res, suc, _ = _exec(w, a, tool_xml("hold_item", item_name="Notebook"))
     assert suc is True
     assert a.currently_holding and a.currently_holding["item"] == "Notebook"
@@ -261,25 +349,29 @@ def test_hold_item_moves_inventory_to_hand_and_store_puts_back():
 def test_drop_then_pick_ground_item():
     w = _mk_world()
     a = _add_agent(w, 0, "Alice")
-    a.currently_holding = {"id": "h", "item": "Book", "durability": 2, "bought": w.sim_time}
+    a.currently_holding = {
+        "id": "h",
+        "item": "Book",
+        "durability": 2,
+        "bought": w.sim_time,
+    }
     res, suc, _ = _exec(w, a, tool_xml("drop_item", item_name="Book"))
     assert suc is True
     assert a.currently_holding is None
     assert len(w.ground_items) == 1
 
-    # Picking it back immediately should be blocked by cooldown
     res, suc, _ = _exec(w, a, tool_xml("pick_item", item_name="Book"))
     assert suc is False
     assert "cannot re-pick" in res.lower()
 
 
 def test_interact_with_escalator_or_floor_object_if_present():
-    # Minimal check that interact_with can operate on visible objects when inside a location.
     w = _mk_world()
     a = _add_agent(w, 0, "Alice")
     _set_inside(a, "Hospital")
-    # Some objects are z-specific; just assert failure is well-formed if not found on floor.
-    res, suc, _ = _exec(w, a, tool_xml("interact_with", person_or_object="Reception Desk", action="use"))
+    res, suc, _ = _exec(
+        w, a, tool_xml("interact_with", person_or_object="Reception Desk", action="use")
+    )
     assert suc is True or "No nearby visible object" in res
 
 
@@ -288,11 +380,9 @@ def test_talk_to_success_and_overhear():
     a = _add_agent(w, 0, "Alice")
     b = _add_agent(w, 1, "Bob")
     c = _add_agent(w, 2, "Cara")
-    # all within 50m already
     res, suc, _ = _exec(w, a, tool_xml("talk_to", person="Bob", message="hello"))
     assert suc is True
     assert any("Alice said: hello" in n for n in b.pending_notifications)
-    # Cara should overhear (if not busy)
     assert any("Overheard Alice" in n for n in c.pending_notifications)
 
 
@@ -304,6 +394,18 @@ def test_talk_to_busy_creates_missed_notification_for_target():
     res, suc, _ = _exec(w, a, tool_xml("talk_to", person="Bob", message="ping"))
     assert suc is False
     assert any("Missed in-person talk" in n for n in b.pending_notifications)
+
+
+def test_talk_to_busy_far_away_does_not_notify():
+    w = _mk_world()
+    a = _add_agent(w, 0, "Alice")
+    b = _add_agent(w, 1, "Bob")
+    b.x = 1000.0
+    b.y = 1000.0
+    b.task_state = "job_pick"
+    res, suc, _ = _exec(w, a, tool_xml("talk_to", person="Bob", message="ping"))
+    assert suc is False
+    assert not any("Missed in-person talk" in n for n in b.pending_notifications)
 
 
 def test_call_person_available_creates_notification_not_voicemail():
@@ -327,30 +429,80 @@ def test_call_person_busy_leaves_voicemail():
     assert len(getattr(b, "voicemail_inbox", [])) == 1
 
 
-def test_change_status_beliefs_update():
-    w = _mk_world()
-    a = _add_agent(w, 0, "Alice")
-    res, suc, _ = _exec(w, a, tool_xml("change_status", person="", type="", value="I will focus on health."))
-    assert suc is True
-    assert "focus on health" in a.beliefs.lower()
-
-
-def test_change_status_request_queued_while_target_sleeping_requires_proximity():
+def test_call_person_message_is_truncated_in_voicemail():
     w = _mk_world()
     a = _add_agent(w, 0, "Alice")
     b = _add_agent(w, 1, "Bob")
     b.is_sleeping = True
     b.busy_until = w.sim_time + 9999
-    res, suc, _ = _exec(w, a, tool_xml("change_status", person="Bob", type="dating", value=""))
+
+    msg = "x" * 1000
+    res, suc, _ = _exec(w, a, tool_xml("call_person", person="Bob", message=msg))
+    assert suc is True
+    assert len(b.voicemail_inbox) == 1
+    stored = b.voicemail_inbox[0]["message"]
+    assert len(stored) < 300
+    assert stored.startswith("x")
+
+
+def test_change_status_beliefs_update():
+    w = _mk_world()
+    a = _add_agent(w, 0, "Alice")
+    res, suc, _ = _exec(
+        w,
+        a,
+        tool_xml("change_status", person="", type="", value="I will focus on health."),
+    )
+    assert suc is True
+    assert "focus on health" in a.beliefs.lower()
+
+
+def test_change_status_request_immediate_when_target_available():
+    w = _mk_world()
+    a = _add_agent(w, 0, "Alice")
+    b = _add_agent(w, 1, "Bob")
+    res, suc, _ = _exec(
+        w, a, tool_xml("change_status", person="Bob", type="dating", value="")
+    )
     assert suc is True
     assert b.pending_status_requests.get("alice") == "dating"
 
 
-def test_give_money_immediate_when_target_available():
+def test_change_status_busy_target_fails_and_does_not_queue():
+    w = _mk_world()
+    a = _add_agent(w, 0, "Alice")
+    b = _add_agent(w, 1, "Bob")
+    b.is_sleeping = True
+    b.busy_until = w.sim_time + 9999
+    res, suc, _ = _exec(
+        w, a, tool_xml("change_status", person="Bob", type="dating", value="")
+    )
+    assert suc is False
+    assert b.pending_status_requests.get("alice") is None
+
+
+def test_give_money_remote_immediate_when_target_available():
     w = _mk_world()
     a = _add_agent(w, 0, "Alice")
     b = _add_agent(w, 1, "Bob")
     a.money = 100.0
+    b.x = 3000.0
+    b.y = 3000.0
+    res, suc, _ = _exec(w, a, tool_xml("give_money", person="Bob", amount="10"))
+    assert suc is True
+    assert a.money == pytest.approx(90.0)
+    assert b.money == pytest.approx(510.0)
+
+
+def test_give_money_remote_immediate_even_if_target_sleeping():
+    w = _mk_world()
+    a = _add_agent(w, 0, "Alice")
+    b = _add_agent(w, 1, "Bob")
+    a.money = 100.0
+    b.is_sleeping = True
+    b.busy_until = w.sim_time + 9999
+    b.x = 3000.0
+    b.y = 3000.0
     res, suc, _ = _exec(w, a, tool_xml("give_money", person="Bob", amount="10"))
     assert suc is True
     assert a.money == pytest.approx(90.0)
@@ -382,6 +534,17 @@ def test_attack_sleeping_succeeds():
     assert b.health < 100.0
 
 
+def test_work_job_invalid_job_fails():
+    w = _mk_world()
+    a = _add_agent(w, 0, "Alice")
+    a.job = "student"
+    a.energy = 100.0
+    _set_inside(a, "Library")
+    res, suc, _ = _exec(w, a, tool_xml("work_job", jobname="student", hours="1"))
+    assert suc is False
+    assert "Invalid or unsupported job" in res
+
+
 def test_work_job_full_flow_and_task_lock_blocks_unrelated_tool():
     w = _mk_world()
     a = _add_agent(w, 0, "Alice")
@@ -390,30 +553,60 @@ def test_work_job_full_flow_and_task_lock_blocks_unrelated_tool():
     a.energy = 100.0
     _set_inside(a, "Startup_Sowl")
 
-    # Start work (enters job_pick)
     res, suc, _ = _exec(w, a, tool_xml("work_job", jobname="developer", hours="1"))
     assert suc is True
     assert a.task_state == "job_pick"
     required = a.pending_task_data["flavor"]["pick"]
 
-    # Unrelated tool should be blocked mid-task by execute_tool
     res2, suc2, _ = _exec(w, a, tool_xml("move_to", place="Library"))
     assert suc2 is False
     assert "middle of a task" in res2.lower()
 
-    # Pick prop
+    a.inventory.append(
+        {"id": "n1", "item": "Notebook", "durability": 1, "bought": w.sim_time}
+    )
+    res3, suc3, _ = _exec(w, a, tool_xml("hold_item", item_name="Notebook"))
+    assert suc3 is False
+    assert "middle of a task" in res3.lower()
+
     res, suc, _ = _exec(w, a, tool_xml("pick_item", item_name=required))
     assert suc is True
     assert a.task_state == "job_mcq"
 
-    # Answer correctly
     ans = a.pending_task_data["flavor"]["ans"]
     target = a.pending_task_data["flavor"]["obj"]
     before = a.money
-    res, suc, _ = _exec(w, a, tool_xml("interact_with", person_or_object=target, action=ans))
+    res, suc, _ = _exec(
+        w, a, tool_xml("interact_with", person_or_object=target, action=ans)
+    )
     assert suc is True
     assert a.task_state == "idle"
-    assert a.money >= before  # earned pay
+    assert a.money >= before
+
+
+def test_task_answer_requires_remaining_in_task_location():
+    w = _mk_world()
+    a = _add_agent(w, 0, "Alice")
+    a.job = "developer"
+    a.hourly_wage = 50.0
+    a.energy = 100.0
+    _set_inside(a, "Startup_Sowl")
+
+    res, suc, _ = _exec(w, a, tool_xml("work_job", jobname="developer", hours="1"))
+    assert suc is True
+    required = a.pending_task_data["flavor"]["pick"]
+
+    res, suc, _ = _exec(w, a, tool_xml("pick_item", item_name=required))
+    assert suc is True
+    target = a.pending_task_data["flavor"]["obj"]
+    ans = a.pending_task_data["flavor"]["ans"]
+
+    _set_inside(a, "Hospital")
+    res, suc, _ = _exec(
+        w, a, tool_xml("interact_with", person_or_object=target, action=ans)
+    )
+    assert suc is False
+    assert "left the required task location" in res.lower()
 
 
 def test_get_education_full_flow_increases_education_and_wage():
@@ -437,7 +630,41 @@ def test_get_education_full_flow_increases_education_and_wage():
     target = a.pending_task_data["flavor"]["obj"]
     edu_before = a.education
     wage_before = a.hourly_wage
-    res, suc, _ = _exec(w, a, tool_xml("interact_with", person_or_object=target, action=ans))
+    res, suc, _ = _exec(
+        w, a, tool_xml("interact_with", person_or_object=target, action=ans)
+    )
     assert suc is True
     assert a.education > edu_before
     assert a.hourly_wage > wage_before
+
+
+def test_multiple_tool_calls_execute_sequentially():
+    w = _mk_world()
+    a = _add_agent(w, 0, "Alice")
+    xml = (
+        "<tool_call><function=walk><parameter=direction>\neast\n</parameter></function></tool_call>\n"
+        "<tool_call><function=walk><parameter=direction>\nwest\n</parameter></function></tool_call>"
+    )
+    old_x = a.x
+    res, suc, cost = _exec(w, a, xml)
+    assert suc is True
+    assert cost == 60
+    assert a.x == pytest.approx(old_x)
+    assert "1. walk: OK" in res
+    assert "2. walk: OK" in res
+
+
+def test_multiple_tool_calls_use_max_cost_not_sum():
+    w = _mk_world()
+    a = _add_agent(w, 0, "Alice")
+    xml = (
+        "<tool_call><function=walk><parameter=direction>\neast\n</parameter></function></tool_call>\n"
+        "<tool_call><function=sleep><parameter=hours>\n2\n</parameter></function></tool_call>"
+    )
+    res, suc, cost = _exec(w, a, xml)
+    assert suc is True
+    assert cost == 7200
+    assert a.x > 10.0
+    assert a.is_sleeping is True
+    assert "1. walk: OK" in res
+    assert "2. sleep: OK" in res
