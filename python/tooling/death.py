@@ -57,13 +57,14 @@ def kill_agent(target, world, cause: str = "unknown") -> None:
         "vehicle_type": getattr(target, "vehicle_type", ""),
     }
 
+    # Clamp estate z to ground-plane so loot is reachable under "floor 1 only".
     estate = {
         "id": str(uuid.uuid4()),
         "source_agent_id": target.id,
         "source_agent_name": target.name,
         "x": float(target.x),
         "y": float(target.y),
-        "z": float(target.z),
+        "z": 0.0,
         "money": round(float(target.money), 2),
         "items": [deepcopy(i) for i in target.inventory],
     }

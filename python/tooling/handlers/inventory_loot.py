@@ -126,7 +126,7 @@ def handle_hold_item(agent, world, args: dict):
         if len(agent.inventory) >= MAX_INVENTORY:
             agent.failed_calls += 1
             return "Inventory full. Cannot store held item.", False, 30
-        held_name = agent.currently_holding["item"]
+        held_name = agent.currently_holding.get("item", "Unknown")
         agent.inventory.append(agent.currently_holding)
         agent.currently_holding = None
         return f"Stored {held_name} back in inventory.", True, 30
@@ -134,9 +134,9 @@ def handle_hold_item(agent, world, args: dict):
     item = canonicalize_item_name(raw_item)
 
     if agent.currently_holding and normalize_label(
-        agent.currently_holding["item"]
+        agent.currently_holding.get("item", "")
     ) == normalize_label(item):
-        return f"You are already holding {agent.currently_holding['item']}.", True, 5
+        return f"You are already holding {agent.currently_holding.get('item','Unknown')}.", True, 5
 
     idx = has_item_index(agent, item)
     if idx == -1:
@@ -157,7 +157,7 @@ def handle_hold_item(agent, world, args: dict):
             return why, False, 30
 
     agent.currently_holding = agent.inventory.pop(idx)
-    return f"Now holding {agent.currently_holding['item']} in hand.", True, 30
+    return f"Now holding {agent.currently_holding.get('item','Unknown')} in hand.", True, 30
 
 
 def handle_pick_item(agent, world, args: dict):
@@ -249,7 +249,7 @@ def handle_pick_item(agent, world, args: dict):
 
         agent.currently_holding = {
             "id": ground_item["id"],
-            "item": ground_item["item"],
+            "item": ground_item.get("item", "Unknown"),
             "durability": ground_item.get("durability", 5),
             "bought": ground_item.get("bought", world.sim_time),
         }
@@ -258,10 +258,10 @@ def handle_pick_item(agent, world, args: dict):
         dropper = world.agents.get(ground_item.get("dropper_id"))
         if dropper and dropper.alive and dropper.id != agent.id:
             dropper.pending_notifications.append(
-                f"{ground_item['item']} you dropped was picked up by someone else."
+                f"{ground_item.get('item','Unknown')} you dropped was picked up by someone else."
             )
 
-        return f"Picked up {agent.currently_holding['item']} from the ground.", True, 30
+        return f"Picked up {agent.currently_holding.get('item','Unknown')} from the ground.", True, 30
 
     if _corpse_item_nearby(world, agent, item):
         agent.failed_calls += 1
@@ -280,8 +280,6 @@ def handle_pick_item(agent, world, args: dict):
 
 def handle_drop_item(agent, world, args: dict):
     raw_item = str(args.get("item_name", "")).strip()
-    # Item 10 fix: empty or missing item_name acts as wildcard for the held
-    # item — the agent doesn't need to explicitly name it.
     if not raw_item:
         if agent.currently_holding:
             if agent.currently_holding.get("id") == "job_prop":
@@ -296,18 +294,17 @@ def handle_drop_item(agent, world, args: dict):
             world.ground_items.append(
                 {
                     "id": str(uuid.uuid4()),
-                    "item": item_data["item"],
+                    "item": item_data.get("item", "Unknown"),
                     "durability": item_data.get("durability", 5),
                     "bought": item_data.get("bought", world.sim_time),
                     "x": float(agent.x),
                     "y": float(agent.y),
-                    "z": float(agent.z),
+                    "z": 0.0,  # clamp to ground-plane
                     "dropper_id": agent.id,
                     "repickup_block_until": world.sim_time + DROP_REPICKUP_COOLDOWN,
                 }
             )
-            return f"Dropped {item_data['item']} on the ground.", True, 30
-        # No held item and no name — fall through to inventory search
+            return f"Dropped {item_data.get('item','Unknown')} on the ground.", True, 30
         item = ""
     else:
         item = canonicalize_item_name(raw_item)
@@ -315,7 +312,7 @@ def handle_drop_item(agent, world, args: dict):
     item_data = None
 
     if agent.currently_holding and normalize_label(item) == normalize_label(
-        agent.currently_holding["item"]
+        agent.currently_holding.get("item", "")
     ):
         if agent.currently_holding.get("id") == "job_prop":
             agent.failed_calls += 1
@@ -338,14 +335,14 @@ def handle_drop_item(agent, world, args: dict):
     world.ground_items.append(
         {
             "id": str(uuid.uuid4()),
-            "item": item_data["item"],
+            "item": item_data.get("item", "Unknown"),
             "durability": item_data.get("durability", 5),
             "bought": item_data.get("bought", world.sim_time),
             "x": float(agent.x),
             "y": float(agent.y),
-            "z": float(agent.z),
+            "z": 0.0,  # clamp
             "dropper_id": agent.id,
             "repickup_block_until": world.sim_time + DROP_REPICKUP_COOLDOWN,
         }
     )
-    return f"Dropped {item_data['item']} on the ground.", True, 30
+    return f"Dropped {item_data.get('item','Unknown')} on the ground.", True, 30

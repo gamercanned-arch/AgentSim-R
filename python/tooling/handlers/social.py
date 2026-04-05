@@ -104,14 +104,13 @@ def handle_talk_to(agent, world, args: dict):
             ),
             text_sleeping=(
                 f'Missed in-person talk: {agent.name} tried to talk to you ("{msg}"), '
-                "but you were sleeping. Don't let them waiting!"
+                "but you were sleeping."
             ),
         )
         agent.failed_calls += 1
         return f"{target.name} is currently busy or sleeping (DND).", False, 60
 
     _social_bump(agent, target, 0.2)
-    # Item 11 fix: removed dead social_fulfillment increment — never consumed.
     target.pending_notifications.append(f"{agent.name} said: {msg}")
 
     for other in world.agents.values():
@@ -165,7 +164,7 @@ def handle_give_item(agent, world, args: dict):
     item_data = None
     source = None
     if agent.currently_holding and normalize_label(
-        agent.currently_holding["item"]
+        agent.currently_holding.get("item", "")
     ) == normalize_label(item_name):
         item_data = agent.currently_holding
         source = "hand"
@@ -175,7 +174,7 @@ def handle_give_item(agent, world, args: dict):
             (
                 i
                 for i, it in enumerate(agent.inventory)
-                if normalize_label(it["item"]) == normalize_label(item_name)
+                if normalize_label(it.get("item", "")) == normalize_label(item_name)
             ),
             -1,
         )
@@ -200,23 +199,23 @@ def handle_give_item(agent, world, args: dict):
                 "created_at": float(world.sim_time),
                 "x": float(agent.x),
                 "y": float(agent.y),
-                "z": float(agent.z),
+                "z": 0.0,  # clamp ground-plane
             }
         )
 
         _enqueue_missed_interaction(
             target,
             text_busy=(
-                f"{agent.name} tried to give you {item_data['item']}, but you were busy. "
+                f"{agent.name} tried to give you {item_data.get('item','Unknown')}, but you were busy. "
                 "Delivery has been queued and will arrive when you are available."
             ),
             text_sleeping=(
-                f"{agent.name} tried to give you {item_data['item']}, but you were sleeping. "
+                f"{agent.name} tried to give you {item_data.get('item','Unknown')}, but you were sleeping. "
                 "Delivery has been queued and will arrive when you are available."
             ),
         )
         agent.pending_notifications.append(
-            f"Queued item delivery: {item_data['item']} -> {target.name}."
+            f"Queued item delivery: {item_data.get('item','Unknown')} -> {target.name}."
         )
         return f"{target.name} is busy/sleeping. Item delivery queued.", True, 60
 
@@ -232,12 +231,12 @@ def handle_give_item(agent, world, args: dict):
                 world.ground_items.append(
                     {
                         "id": str(uuid.uuid4()),
-                        "item": item_data["item"],
+                        "item": item_data.get("item", "Unknown"),
                         "durability": item_data.get("durability", 5),
                         "bought": item_data.get("bought", world.sim_time),
                         "x": float(agent.x),
                         "y": float(agent.y),
-                        "z": float(agent.z),
+                        "z": 0.0,  # clamp
                         "dropper_id": agent.id,
                         "repickup_block_until": world.sim_time,
                     }
@@ -247,13 +246,17 @@ def handle_give_item(agent, world, args: dict):
 
     target.inventory.append(item_data)
     _social_bump(agent, target, 0.25)
-    # Item 11 fix: removed dead social_fulfillment increment — never consumed.
-    target.pending_notifications.append(f"{agent.name} gave you {item_data['item']}.")
-    return f"Gave {item_data['item']} to {target.name}.", True, 60
+    target.pending_notifications.append(f"{agent.name} gave you {item_data.get('item','Unknown')}.")
+    return f"Gave {item_data.get('item','Unknown')} to {target.name}.", True, 60
 
 
 def handle_give_money(agent, world, args: dict):
+    # Bank transfer semantics:
+    # - no proximity requirement
+    # - ignores busy/sleeping
+    # - only fails if sender lacks funds OR recipient invalid/dead
     t_name = str(args.get("person", "")).strip()
+
     try:
         amount = float(args.get("amount", 0))
     except (ValueError, TypeError):
@@ -263,19 +266,30 @@ def handle_give_money(agent, world, args: dict):
         agent.failed_calls += 1
         return "Invalid amount.", False, 60
 
-    if agent.money < amount:
-        agent.failed_calls += 1
-        return "Not enough money.", False, 60
-
     target = find_agent_by_name(world, t_name)
     if not target or not target.alive:
         agent.failed_calls += 1
-        return "Target not found.", False, 60
+        # Per requirement: notify sender only.
+        agent.pending_notifications.append(
+            f"Bank transfer failed: recipient '{t_name}' not found or not alive."
+        )
+        return "Recipient not found.", False, 60
+
+    if agent.money < amount:
+        agent.failed_calls += 1
+        # Per requirement: insufficient funds is the only "normal" failure mode;
+        # notify BOTH sender and recipient.
+        agent.pending_notifications.append(
+            f"Bank transfer to {target.name} failed: insufficient funds for ${amount:.2f}."
+        )
+        target.pending_notifications.append(
+            f"Bank transfer from {agent.name} failed: insufficient funds for ${amount:.2f}."
+        )
+        return "Not enough money.", False, 60
 
     agent.money -= amount
     target.money += amount
     _social_bump(agent, target, 0.2)
-    # Item 11 fix: removed dead social_fulfillment increment — never consumed.
     target.pending_notifications.append(f"{agent.name} transferred you ${amount:.2f}.")
     return f"Transferred ${amount:.2f} to {target.name}.", True, 60
 
@@ -295,7 +309,7 @@ def handle_change_status(agent, world, args: dict):
             agent.failed_calls += 1
             return f"Person '{person}' not found.", False, 60
 
-        ok, reason = can_physically_reach_person(agent, target, STATUS_MAX_DISTANCE)
+        ok, _reason = can_physically_reach_person(agent, target, STATUS_MAX_DISTANCE)
         if not ok:
             agent.failed_calls += 1
             return (
@@ -304,6 +318,7 @@ def handle_change_status(agent, world, args: dict):
                 60,
             )
 
+        # Required behavior: fail (no queue) if target is busy/sleeping.
         if is_busy(target, world.sim_time):
             agent.failed_calls += 1
             return f"{target.name} is currently busy or sleeping (DND).", False, 60

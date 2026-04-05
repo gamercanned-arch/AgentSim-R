@@ -111,10 +111,12 @@ class WorldState:
                 name for name in available
                 if ("_Floor_1" in name) or ("_Floor_" not in name)
             ]
-            if floor1_candidates:
-                choice = random.choice(floor1_candidates)
-                available.remove(choice)
-                return choice
+            # Floor-1-only rule: do NOT fall back to other floors.
+            if not floor1_candidates:
+                return None
+            choice = random.choice(floor1_candidates)
+            available.remove(choice)
+            return choice
 
         choice = random.choice(available)
         available.remove(choice)

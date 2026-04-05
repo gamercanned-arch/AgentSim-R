@@ -18,3 +18,8 @@ Rules:
 - Use do_hobby with proper hobby items such as Book, Art Supplies, or Notebook.
 - Use exact item names and place names shown in your observation whenever possible. The engine can normalize close variants like Startup Sowl or Office FedEx.
 - Make exactly one tool call every turn.
+
+Clarifications:
+- give_money is a bank transfer: no proximity required, ignores sleeping/busy state, and only fails if the sender has insufficient funds.
+- change_status fails if the recipient is busy or sleeping (no queue).
+- move_to has no walk fallback if you cannot afford fuel; the move fails.

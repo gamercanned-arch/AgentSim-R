@@ -16,11 +16,6 @@ def handle_sleep(agent, world, args: dict):
     agent.awake_hours = 0
     agent.is_sleeping = True
     agent.current_activity = "sleeping"
-    # Item 8 fix: record sleep start time so _refresh_agent_activity can
-    # compute prorated energy/stress recovery at wake-up.
-    agent._sleep_start = world.sim_time
-    # Item 8 fix: record sleep start time so _refresh_agent_activity can
-    # compute prorated energy/stress recovery at wake-up.
     agent._sleep_start = world.sim_time
 
     return (
@@ -37,7 +32,7 @@ def handle_do_hobby(agent, world, args: dict):
 
     if (
         agent.currently_holding
-        and agent.currently_holding["item"].lower() == item.lower()
+        and str(agent.currently_holding.get("item", "")).lower() == item.lower()
     ):
         item_data = agent.currently_holding
         source = "hand"
@@ -51,21 +46,21 @@ def handle_do_hobby(agent, world, args: dict):
         agent.failed_calls += 1
         return f"You don't have {item}.", False, 60
 
-    if item_data["item"] not in HOBBY_ITEMS:
+    if item_data.get("item") not in HOBBY_ITEMS:
         agent.failed_calls += 1
-        return f"{item_data['item']} is not a valid hobby item.", False, 60
+        return f"{item_data.get('item','Unknown')} is not a valid hobby item.", False, 60
 
     agent.stress = max(0.0, agent.stress - 15.0)
     agent.happiness = min(100.0, agent.happiness + 10.0)
 
     item_data["durability"] = item_data.get("durability", 5) - 1
-    msg = f"Enjoyed hobby time with {item_data['item']}. Stress fell."
+    msg = f"Enjoyed hobby time with {item_data.get('item','Unknown')}. Stress fell."
 
     if item_data["durability"] <= 0:
         if source == "hand":
             agent.currently_holding = None
         elif isinstance(source, int):
             agent.inventory.pop(source)
-        msg += f" {item_data['item']} wore out."
+        msg += f" {item_data.get('item','Unknown')} wore out."
 
     return msg, True, 3600

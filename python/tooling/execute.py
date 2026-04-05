@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Callable, Dict, Tuple
 
 from python.config import TOOLS_PATH
@@ -121,6 +122,13 @@ def _validate_schema(name: str, args: dict) -> str | None:
     return None
 
 
+def _clamp_agent_floor1(agent) -> None:
+    if getattr(agent, "z", 0.0) != 0.0:
+        agent.z = 0.0
+    if hasattr(agent, "vehicle_z") and getattr(agent, "vehicle_z", 0.0) != 0.0:
+        agent.vehicle_z = 0.0
+
+
 def _execute_one(name: str, args: dict, agent, world) -> Tuple[str, bool, int]:
     if agent.is_sleeping and world.sim_time >= agent.busy_until:
         agent.is_sleeping = False
@@ -154,7 +162,10 @@ def _execute_one(name: str, args: dict, agent, world) -> Tuple[str, bool, int]:
         return f"Tool {name} not found.", False, 60
 
     try:
-        return handler(agent, world, args)
+        res, suc, cost = handler(agent, world, args)
+        if suc:
+            _clamp_agent_floor1(agent)
+        return res, suc, cost
     except Exception as e:
         agent.failed_calls += 1
         return f"Tool {name} crashed: {type(e).__name__}: {e}", False, 60
@@ -169,6 +180,8 @@ def execute_tool(tool_call_str: str, agent_id: int, world) -> Tuple[str, bool, i
     if not agent.alive:
         return "Agent inactive.", False, 0
 
+    agent._last_api_tool_steps = []
+
     if parse_error:
         agent.last_parse_error = True
         agent.failed_calls += 1
@@ -181,20 +194,32 @@ def execute_tool(tool_call_str: str, agent_id: int, world) -> Tuple[str, bool, i
         agent.last_parse_error = True
         return "Parse error: No tool name.", False, 60
 
+    def new_id() -> str:
+        return "call_" + uuid.uuid4().hex
+
     if len(calls) == 1:
         name, args = calls[0]
-        return _execute_one(name, args, agent, world)
+        res, suc, cost = _execute_one(name, args, agent, world)
+        agent._last_api_tool_steps = [
+            {"id": new_id(), "name": name, "args": dict(args or {}), "result": res, "success": bool(suc), "cost": int(cost)}
+        ]
+        return res, suc, cost
 
     step_results = []
-    any_success = False
-    max_cost = 0
+    all_success = True
+    total_cost = 0
+    steps = []
 
     for idx, (name, args) in enumerate(calls, start=1):
         res, suc, cost = _execute_one(name, args, agent, world)
-        any_success = any_success or suc
-        max_cost = max(max_cost, int(cost))
-        step_results.append(
-            f"{idx}. {name}: {'OK' if suc else 'FAIL'} - {res}"
-        )
+        all_success = all_success and suc
+        if suc:
+            total_cost += max(0, int(cost))
+        else:
+            total_cost += max(60, int(cost))
 
-    return " | ".join(step_results), any_success, max_cost
+        steps.append({"id": new_id(), "name": name, "args": dict(args or {}), "result": res, "success": bool(suc), "cost": int(cost)})
+        step_results.append(f"{idx}. {name}: {'OK' if suc else 'FAIL'} - {res}")
+
+    agent._last_api_tool_steps = steps
+    return " | ".join(step_results), all_success, total_cost

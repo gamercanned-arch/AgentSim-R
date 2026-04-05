@@ -3,3 +3,6 @@ numpy
 huggingface_hub
 jinja2
 pytest
+python-dotenv
+groq
+cerebras-cloud-sdk

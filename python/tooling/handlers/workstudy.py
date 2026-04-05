@@ -67,9 +67,7 @@ def _task_location_ok(agent) -> bool:
     return bool(here and workplace and here.name == workplace)
 
 
-def _object_visible_here(
-    agent, target_name: str, allow_task_target: bool = False
-) -> bool:
+def _object_visible_here(agent, target_name: str, allow_task_target: bool = False) -> bool:
     here = get_current_location_def(agent.x, agent.y, agent.z)
     if not here:
         return False
@@ -116,10 +114,6 @@ def handle_work_job(agent, world, args: dict):
 
     hours = max(1.0, min(10.0, hours))
     required_energy = hours * 10.0
-    # Item 4 fix: energy is deducted at task completion (L255), not here.
-    # The pre-check remains so agents can't start tasks they can't afford,
-    # but the actual drain happens once when the task resolves to avoid
-    # double-deduction with passive hourly drain (scheduler L690).
     if agent.energy < required_energy:
         agent.failed_calls += 1
         return (
@@ -208,173 +202,6 @@ def handle_get_education(agent, world, args: dict):
 
     hours = max(1.0, min(10.0, hours))
     required_energy = hours * 10.0
-    # Item 4 fix: energy is deducted at task completion, not here.
-    # Same rationale as handle_work_job — avoid double-deduction with passive drain.
-    if agent.energy < required_energy:
-        agent.failed_calls += 1
-        return (
-            f"Need {required_energy:.1f} energy to spend {hours:.1f}h on this task. Have {agent.energy:.1f}.",
-            False,
-            60,
-        )
-
-    here = get_current_location_def(agent.x, agent.y, agent.z)
-    if not here or here.name not in EDUCATION_LOCATIONS:
-        agent.failed_calls += 1
-        return (
-            "You must be inside School or Library to study. "
-            "Use move_to for School or Library, then walk inside.",
-            False,
-            60,
-        )
-
-    edu_loc = get_location_by_name(here.name)
-    if not edu_loc:
-        agent.failed_calls += 1
-        return "Education location not found.", False, 60
-
-    if not check_open_hours(edu_loc, world.sim_time):
-        agent.failed_calls += 1
-        return f"{edu_loc.name} is currently closed.", False, 60
-
-    remaining = seconds_until_close(edu_loc, world.sim_time)
-    if hours * 3600.0 > remaining:
-        agent.failed_calls += 1
-        return (
-            f"{edu_loc.name} closes in {remaining / 3600.0:.1f}h. "
-            f"Reduce requested study time to {max(0.0, remaining / 3600.0):.1f}h or less.",
-            False,
-            60,
-        )
-
-    lowered = study_type.lower()
-    tuition = 2000.0
-    if "phd" in lowered or "doctorate" in lowered:
-        tuition = 8000.0
-    elif "master" in lowered:
-        tuition = 4000.0
-
-    if "student" in (agent.job or "").lower():
-        tuition = min(tuition, 150.0)
-
-    if agent.money < tuition:
-        agent.failed_calls += 1
-        return f"Cannot afford tuition (${tuition:.2f}).", False, 60
-
-    agent.money -= tuition
-    record_expense(agent, tuition)
-    agent.pending_notifications.append(f"Paid ${tuition:.2f} in tuition fees.")
-
-    pool_key = "education"
-    scenario = pick_scenario(agent, pool_key)
-
-    agent.task_state = "job_pick"
-    agent.current_activity = "studying"
-    agent.pending_task_data = {
-        "type": "get_education",
-        "hours": hours,
-        "job_raw": study_type,
-        "workplace": edu_loc.name,
-        "flavor": scenario,
-        "task_failures": 0,
-        "pool_key": pool_key,
-    }
-    agent.active_task_entities = {
-        "prop": scenario["pick"],
-        "target": scenario["obj"],
-        "scenario_id": scenario["id"],
-        "location": edu_loc.name,
-    }
-
-    return (
-        f"Study session started for {study_type} at {edu_loc.name}. "
-        f"Next step: pick up the required task prop {scenario['pick']}.",
-        True,
-        60,
-    )
-
-    workplace_name = resolve_workplace_name(job_raw, agent)
-    if not workplace_name:
-        agent.failed_calls += 1
-        return (
-            f"Invalid or unsupported job '{job_raw}'. Use a valid jobname for your workplace.",
-            False,
-            60,
-        )
-
-    here = get_current_location_def(agent.x, agent.y, agent.z)
-    workplace = get_location_by_name(workplace_name)
-    if not workplace:
-        agent.failed_calls += 1
-        return f"Workplace '{workplace_name}' not found.", False, 60
-
-    if not here or here.name != workplace_name:
-        agent.failed_calls += 1
-        return (
-            f"You must be inside {workplace_name} to work. "
-            f"Use move_to for {workplace_name}, then walk into the building.",
-            False,
-            60,
-        )
-
-    if not check_open_hours(workplace, world.sim_time):
-        agent.failed_calls += 1
-        return f"{workplace_name} is currently closed.", False, 60
-
-    remaining = seconds_until_close(workplace, world.sim_time)
-    if hours * 3600.0 > remaining:
-        agent.failed_calls += 1
-        return (
-            f"{workplace_name} closes in {remaining / 3600.0:.1f}h. "
-            f"Reduce requested work time to {max(0.0, remaining / 3600.0):.1f}h or less.",
-            False,
-            60,
-        )
-
-    pool_key = pool_key_for_job(job_raw, "work_job")
-    scenario = pick_scenario(agent, pool_key)
-
-    agent.task_state = "job_pick"
-    agent.current_activity = "working"
-    agent.pending_task_data = {
-        "type": "work_job",
-        "hours": hours,
-        "job_raw": job_raw,
-        "workplace": workplace_name,
-        "flavor": scenario,
-        "task_failures": 0,
-        "pool_key": pool_key,
-    }
-    agent.active_task_entities = {
-        "prop": scenario["pick"],
-        "target": scenario["obj"],
-        "scenario_id": scenario["id"],
-        "location": workplace_name,
-    }
-
-    return (
-        f"Shift started as {job_raw} at {workplace_name}. "
-        f"Next step: pick up the required task prop {scenario['pick']}.",
-        True,
-        60,
-    )
-
-
-def handle_get_education(agent, world, args: dict):
-    if agent.task_state != "idle":
-        agent.failed_calls += 1
-        return "Already doing a task.", False, 60
-
-    study_type = str(args.get("type", "education")).strip() or "education"
-    try:
-        hours = float(args.get("hours", 8))
-    except (ValueError, TypeError):
-        hours = 8.0
-
-    hours = max(1.0, min(10.0, hours))
-    required_energy = hours * 10.0
-    # Item 4 fix: energy is deducted at task completion, not here.
-    # Same rationale as handle_work_job — avoid double-deduction with passive drain.
     if agent.energy < required_energy:
         agent.failed_calls += 1
         return (
@@ -465,10 +292,7 @@ def handle_interact_with(agent, world, args: dict):
 
     if agent.task_state == "idle":
         act_norm = normalize_label(action)
-        if any(
-            k in act_norm
-            for k in ("work", "study", "shift", "job", "exam", "earn", "salary")
-        ):
+        if any(k in act_norm for k in ("work", "study", "shift", "job", "exam", "earn", "salary")):
             agent.failed_calls += 1
             return (
                 "This does not count as paid work or study. Use work_job or get_education to start a task.",
@@ -484,9 +308,7 @@ def handle_interact_with(agent, world, args: dict):
             agent.failed_calls += 1
             return _task_failure(agent, "You left the required task location.", 60)
 
-        if not _task_target_ok(agent, target) or normalize_label(
-            target
-        ) != normalize_label(required_target):
+        if not _task_target_ok(agent, target) or normalize_label(target) != normalize_label(required_target):
             agent.failed_calls += 1
             return _task_failure(
                 agent,
@@ -537,26 +359,16 @@ def handle_interact_with(agent, world, args: dict):
 
     if agent.task_state == "job_pick":
         agent.failed_calls += 1
-        return _task_failure(
-            agent, "You need to pick up the required task prop first.", 60
-        )
+        return _task_failure(agent, "You need to pick up the required task prop first.", 60)
 
     target_agent = next(
-        (
-            a
-            for a in world.agents.values()
-            if a.alive and normalize_label(a.name) == normalize_label(target)
-        ),
+        (a for a in world.agents.values() if a.alive and normalize_label(a.name) == normalize_label(target)),
         None,
     )
     if target_agent:
         if is_busy(target_agent, world.sim_time):
             agent.failed_calls += 1
-            return (
-                f"{target_agent.name} is currently busy or sleeping (DND).",
-                False,
-                60,
-            )
+            return (f"{target_agent.name} is currently busy or sleeping (DND).", False, 60)
 
         ok, reason = can_physically_reach_person(agent, target_agent, 20.0)
         if not ok:
@@ -565,18 +377,12 @@ def handle_interact_with(agent, world, args: dict):
 
         agent.relationships = min(25.0, agent.relationships + 0.15)
         target_agent.relationships = min(25.0, target_agent.relationships + 0.10)
-        target_agent.pending_notifications.append(
-            f"{agent.name} interacted with you ({action})."
-        )
+        target_agent.pending_notifications.append(f"{agent.name} interacted with you ({action}).")
         return f"Interacted with {target_agent.name}.", True, 60
 
     if not _object_visible_here(agent, target, allow_task_target=False):
         agent.failed_calls += 1
-        return (
-            f"No nearby visible object named '{target}' found on your current floor.",
-            False,
-            60,
-        )
+        return (f"No nearby visible object named '{target}' found on your current floor.", False, 60)
 
     loc = get_current_location_def(agent.x, agent.y, agent.z)
     if loc:
@@ -585,14 +391,17 @@ def handle_interact_with(agent, world, args: dict):
                 continue
             if abs(float(obj.get("z", 0.0)) - agent.z) > 1.0:
                 continue
+
+            # Temporary global rule: forbid moving to other floors (Z != 0).
+            if "target_z" in obj and float(obj["target_z"]) != 0.0:
+                agent.failed_calls += 1
+                return "Floor changes are disabled for now. Stay on floor 1 (Z=0).", False, 60
+
             if "target_z" in obj:
                 agent.z = float(obj["target_z"])
                 return f"Used {obj['name']}. Moved to floor Z={agent.z}.", True, 60
+
             return f"Used {obj['name']} ({action}).", True, 60
 
     agent.failed_calls += 1
-    return (
-        f"No nearby visible object named '{target}' found on your current floor.",
-        False,
-        60,
-    )
+    return (f"No nearby visible object named '{target}' found on your current floor.", False, 60)

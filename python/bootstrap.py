@@ -44,9 +44,12 @@ def build_starting_world(seed: int = RANDOM_SEED, n_agents: int = N_AGENTS) -> W
         agent.job = profile["job"]
 
         home_type = profile["home"]
+        # Floor-1-only: if no floor-1 lot exists, fail loudly.
         home_location = world.allocate_home_lot(home_type, prefer_floor1=True)
         if not home_location:
-            raise RuntimeError(f"No vacant home lots available for starting home type '{home_type}'.")
+            raise RuntimeError(
+                f"No vacant FLOOR 1 home lots available for starting home type '{home_type}'."
+            )
 
         agent.current_home_type = home_type
         agent.home_location = home_location

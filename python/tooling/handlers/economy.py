@@ -69,7 +69,11 @@ def handle_buy_item(agent, world, args: dict):
         outside = get_location_outside_entrance_point(dealership, offset_m=15.0)
         agent.vehicle_x, agent.vehicle_y, agent.vehicle_z = outside
 
-        return f"Bought vehicle: {item} for ${price:.2f}. It is parked outside the dealership.", True, 600
+        return (
+            f"Bought vehicle: {item} for ${price:.2f}. It is parked outside the dealership.",
+            True,
+            600,
+        )
 
     if item in ITEM_CATALOG["housing"]:
         if item == agent.current_home_type:
@@ -91,10 +95,11 @@ def handle_buy_item(agent, world, args: dict):
                 60,
             )
 
-        new_home_location = world.allocate_home_lot(item)
+        # Floor-1 only home purchases (temporary global rule).
+        new_home_location = world.allocate_home_lot(item, prefer_floor1=True)
         if not new_home_location:
             agent.failed_calls += 1
-            return f"No vacant {item} lots are currently available.", False, 60
+            return f"No vacant {item} Floor 1 lots are currently available.", False, 60
 
         if old_home_type and old_home_location:
             world.release_home_lot(old_home_type, old_home_location)
@@ -166,14 +171,18 @@ def handle_eat_food(agent, world, args: dict):
     item = canonicalize_food_name(str(args.get("item", "")).strip()[:100])
 
     food_data = None
-    if agent.currently_holding and agent.currently_holding["item"].lower() == item.lower():
+    held_name = (agent.currently_holding or {}).get("item", "")
+    if agent.currently_holding and str(held_name).lower() == item.lower():
         if item not in ITEM_CATALOG["food"]:
             agent.failed_calls += 1
             return f"{item} is not edible food.", False, 60
         food_data = agent.currently_holding
         agent.currently_holding = None
     else:
-        idx = next((i for i, it in enumerate(agent.inventory) if it["item"].lower() == item.lower()), -1)
+        idx = next(
+            (i for i, it in enumerate(agent.inventory) if str(it.get("item", "")).lower() == item.lower()),
+            -1,
+        )
         if idx != -1:
             if item not in ITEM_CATALOG["food"]:
                 agent.failed_calls += 1

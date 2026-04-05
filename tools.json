@@ -52,7 +52,7 @@
     },
     {
       "name": "change_status",
-      "description": "Update your beliefs/goals, or request/accept a relationship status change with a nearby person. If they are busy or sleeping, the request is queued for them to see later.",
+      "description": "Update your beliefs/goals, or request/accept a relationship status change with a nearby person. If they are busy or sleeping, the action fails.",
       "params": ["person", "type", "value"]
     },
     {
@@ -87,7 +87,7 @@
     },
     {
       "name": "give_money",
-      "description": "Transfer money to someone within 20m. If they are busy or sleeping, the transfer is queued and will be delivered when they are available. The money is escrowed immediately.",
+      "description": "Transfer money by bank transfer. No proximity required. Ignores busy/sleeping. Only fails if the sender has insufficient funds. On insufficient funds, both sender and recipient are notified.",
       "params": ["person", "amount"]
     },
     {

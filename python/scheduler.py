@@ -58,6 +58,11 @@ def _ensure_agent_schema(agent) -> None:
 
     if not hasattr(agent, "voicemail_inbox") or agent.voicemail_inbox is None:
         agent.voicemail_inbox = []
+    # Floor-1-only safety invariant
+    if getattr(agent, "z", 0.0) != 0.0:
+        agent.z = 0.0
+    if hasattr(agent, "vehicle_z") and getattr(agent, "vehicle_z", 0.0) != 0.0:
+        agent.vehicle_z = 0.0
 
 
 def _sha16(text: str) -> str:
@@ -108,7 +113,7 @@ def _drop_ground_item(
             "bought": item_data.get("bought", world.sim_time),
             "x": float(x),
             "y": float(y),
-            "z": float(z),
+            "z": 0.0,  # clamp to floor 1
             "dropper_id": int(dropper_id) if dropper_id is not None else -1,
             "repickup_block_until": float(world.sim_time),
         }
@@ -196,7 +201,7 @@ def _process_pending_deliveries(world, current_time: float) -> None:
         fallback_xyz = (
             float(d.get("x", 0.0)),
             float(d.get("y", 0.0)),
-            float(d.get("z", 0.0)),
+            0.0,
         )
 
         if not target or not target.alive:
@@ -320,12 +325,6 @@ def _tool_history_text(result: str, max_chars: int = 1200) -> str:
 
 
 def _sanitize_chat_history(text: str, max_chars: int = 2400) -> str:
-    """Sanitize text before storing in chat history to prevent prompt injection.
-
-    Mirrors _safe_prompt_text from prompting.py but lives here to avoid
-    circular imports.  Replaces angle brackets, strips null bytes, and
-    collapses excessive whitespace.
-    """
     s = "" if text is None else str(text)
     s = s.replace("\x00", "")
     s = s.replace("<", "‹").replace(">", "›")
@@ -336,19 +335,50 @@ def _sanitize_chat_history(text: str, max_chars: int = 2400) -> str:
     return s
 
 
-def _commit_history(
-    agent, user_text: str, assistant_text: str, tool_result: str
-) -> None:
-    # Item 6 fix: sanitize assistant output before storing in chat history
-    # to prevent prompt injection through accumulated history.
+def _commit_history(agent, user_text: str, assistant_text: str, tool_result: str) -> None:
+    """
+    Stores history in a way that is compatible with:
+    - local prompt template (role=tool messages)
+    - API chat tool role enforcement (tool_call_id + assistant.tool_calls)
+
+    execute_tool() stores per-step metadata on:
+      agent._last_api_tool_steps = [{"id","name","args","result",...}, ...]
+    """
     safe_assistant = _sanitize_chat_history(assistant_text, max_chars=2400)
+
     agent.chat_history.append({"role": "user", "content": user_text})
-    agent.chat_history.append(
-        {"role": "assistant", "content": _assistant_history_text(safe_assistant)}
-    )
-    agent.chat_history.append(
-        {"role": "tool", "content": _tool_history_text(tool_result)}
-    )
+
+    steps = list(getattr(agent, "_last_api_tool_steps", []) or [])
+    api_tool_calls = []
+    for st in steps:
+        api_tool_calls.append(
+            {"id": st.get("id", ""), "name": st.get("name", ""), "args": dict(st.get("args", {}) or {})}
+        )
+
+    assistant_entry = {"role": "assistant", "content": _assistant_history_text(safe_assistant)}
+    if api_tool_calls:
+        assistant_entry["api_tool_calls"] = api_tool_calls
+    else:
+        # If no tool step metadata exists (e.g. server error / parse error),
+        # create a synthetic tool call so tool-role history remains API-valid.
+        synthetic_id = str(uuid.uuid4())
+        assistant_entry["api_tool_calls"] = [{"id": synthetic_id, "name": "error", "args": {}}]
+        steps = [{"id": synthetic_id, "result": tool_result}]
+
+    agent.chat_history.append(assistant_entry)
+
+    # Append one tool message per step with tool_call_id
+    for st in steps:
+        agent.chat_history.append(
+            {
+                "role": "tool",
+                "content": _tool_history_text(st.get("result", tool_result)),
+                "tool_call_id": st.get("id", ""),
+            }
+        )
+
+    # clear for next turn
+    agent._last_api_tool_steps = []
 
 
 def _pop_oldest_turn(agent) -> bool:
@@ -420,7 +450,7 @@ def run_tick(world) -> bool:
             _advance_market_to(world, world.last_passive)
             _update_weather(world)
             _restock_if_needed(world)
-            _apply_midnight_taxes(world)
+            _apply_midnight_taxes(world, world.last_passive)
 
             for a in list(world.agents.values()):
                 if not a.alive:
@@ -482,9 +512,6 @@ def run_tick(world) -> bool:
                 "prompt_chars": prompt_chars,
             }
         )
-        # Item 5 fix: instead of returning False (which causes an infinite
-        # penalty loop when the base prompt alone exceeds context), advance
-        # sim_time past the penalty window so the next tick re-evaluates.
         world.sim_time = agent.busy_until
         return False
 
@@ -628,10 +655,6 @@ def _refresh_agent_activity(agent, current_time: float) -> None:
         agent.current_activity = "dead"
         return
 
-    # Item 8 fix: apply prorated energy/stress recovery when the agent wakes
-    # up.  Previously recovery only happened during hourly passive ticks, so
-    # partial-hour sleep got nothing.  Now we compute recovery based on the
-    # actual sleep duration at wake-up time.
     if agent.is_sleeping and current_time >= agent.busy_until:
         sleep_duration_hours = max(
             0.0,
@@ -757,21 +780,31 @@ def _restock_if_needed(world) -> None:
         world.global_news = world.global_news[-20:]
 
 
-def _apply_midnight_taxes(world) -> None:
-    last_day = int(world.last_passive) // 86400
-    current_day = int(world.sim_time) // 86400
-    if current_day == last_day:
+def _apply_midnight_taxes(world, tick_time: float) -> None:
+    current_day = int(float(tick_time)) // 86400
+
+    if not hasattr(world, "last_tax_day"):
+        world.last_tax_day = current_day
         return
 
-    for agent in world.agents.values():
-        if not agent.alive:
-            continue
-        if agent.money < TAX_EXEMPT_BELOW_CASH:
-            continue
-        agent.money -= TAX_AMOUNT
-        agent.expenses += TAX_AMOUNT
-        agent.total_expenses += TAX_AMOUNT
-        agent.pending_notifications.append(f"Tax deducted: ${TAX_AMOUNT:.2f}")
+    last_tax_day = int(getattr(world, "last_tax_day"))
+
+    if current_day <= last_tax_day:
+        return
+
+    # Apply taxes once per day crossed
+    for _day in range(last_tax_day + 1, current_day + 1):
+        for agent in world.agents.values():
+            if not agent.alive:
+                continue
+            if agent.money < TAX_EXEMPT_BELOW_CASH:
+                continue
+            agent.money -= TAX_AMOUNT
+            agent.expenses += TAX_AMOUNT
+            agent.total_expenses += TAX_AMOUNT
+            agent.pending_notifications.append(f"Tax deducted: ${TAX_AMOUNT:.2f}")
+
+    world.last_tax_day = current_day
 
 
 def _safe_current_location(agent):
@@ -796,27 +829,19 @@ def _apply_passive_updates(agent, world, current_time: float) -> None:
         agent.awake_hours += 1
 
     agent.expenses *= 0.99
-    # Item 11 fix: removed dead social_fulfillment decrement — the variable
-    # is never read by any model (happiness, stress, health), so tracking it
-    # only wastes CPU cycles and misleads developers.
     agent.caffeine_level = max(0, agent.caffeine_level - 1)
 
     for key, until in list(agent.social_cooldowns.items()):
         if until <= current_time:
             del agent.social_cooldowns[key]
 
-    # Hydration drain (before emergency thirst check)
     agent.hydration = max(0.0, agent.hydration - (1.5 if is_sleeping_now else 4.0))
     if not is_sleeping_now and agent.hydration <= 12.0:
         _attempt_emergency_consume(agent, world, mode="thirst")
 
-    # Hunger gain (before emergency hunger check — Item 3 fix)
     hunger_gain = 0.5 if is_sleeping_now else 5.0
     agent.hunger = min(100.0, agent.hunger + hunger_gain)
 
-    # Emergency hunger check must fire AFTER hunger gain so the updated value
-    # is used.  If hunger crossed the 90 threshold this tick, the agent gets an
-    # immediate chance to auto-consume.
     if not is_sleeping_now and agent.hunger >= 90.0:
         _attempt_emergency_consume(agent, world, mode="hunger")
 
@@ -867,14 +892,6 @@ def _apply_passive_updates(agent, world, current_time: float) -> None:
     agent.stress = max(
         0.0, min(100.0, agent.stress * 0.7 + (stress_target * stress_penalty) * 0.3)
     )
-
-    # Item 8 fix: energy/stress recovery during sleep is now handled at
-    # wake-up in _refresh_agent_activity, so partial-hour sleep also gets
-    # prorated recovery.  The old hourly-only recovery here has been removed.
-
-    # --- Items 1 & 2: starvation/dehydration damage BEFORE health clamp ---
-    # (Audit items 1 & 2: damage was historically applied after clamp;
-    #  current ordering is already correct — damage here, clamp below.)
 
     age_factor = math.exp(0.02 * agent.age)
     energy_penalty = 0.0 if agent.energy > 10.0 else 0.5

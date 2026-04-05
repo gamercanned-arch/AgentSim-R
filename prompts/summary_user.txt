@@ -1,0 +1,13 @@
+Existing summary (may be empty):
+{existing_summary}
+
+New turns to incorporate:
+{chunk_text}
+
+Write an updated summary that is:
+- compact and factual
+- includes money, health/energy/hunger/hydration/stress/happiness changes if present
+- includes key social/relationship changes and conflicts
+- includes major movement/work/study outcomes
+
+Return ONLY the updated summary text.
