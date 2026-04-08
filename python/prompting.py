@@ -94,6 +94,8 @@ def _build_base_system_prompt(agent) -> str:
         "[Dynamic Simulation Rules]\n"
         "- You MUST output exactly one valid XML tool call each turn.\n"
         "- You MAY think in an optional <think>...</think> block before the tool call.\n"
+        "- If your model does NOT support <think> tags, you MUST still provide brief reasoning BEFORE the <tool_call> in plain text.\n"
+        "  (The engine will treat any text before <tool_call> as reasoning.)\n"
         "- Do NOT output any text after </tool_call>.\n"
         "- Coordinates shown in observations are read-only telemetry. Never pass coordinates into any tool.\n"
         "- For move_to, use only a named public location or a home alias like Home_Taylor. Never use raw coordinates or internal location IDs.\n"
@@ -107,6 +109,7 @@ def _build_base_system_prompt(agent) -> str:
         "- Required task props cannot be stored away until the task ends.\n"
         "- Corpse estate loot is collected automatically when you get close enough.\n"
         "- Environmental objects are NOT inventory items unless shown in Held or Inventory.\n"
+        "- Floor changes are disabled (ground floor only). Ignore elevators/stairs.\n"
         "- Use exact location and item names when possible; do not invent new places.\n"
     )
 
@@ -206,11 +209,17 @@ def _visible_objects_here(agent) -> str:
 
     names = []
     for obj in loc_def.interactables:
+        # Hide any floor-change interactables entirely (ground floor only).
+        if "target_z" in obj:
+            continue
+
+        # FIX 8: Ground-floor-only — show objects on the ground floor (z=0).
+        # Previously relied on OBJECT_Z_TOLERANCE=1.0 to mask a coordinate
+        # mismatch between agent Z and interactable Z. Now that all home
+        # interactables are registered at z=0 and agents are clamped to z=0,
+        # we use the same tolerance as a safety net but the values should match.
         if abs(float(obj.get("z", 0.0)) - agent.z) <= 1.0:
-            if "target_z" in obj:
-                names.append(f"{obj['name']}->Z{obj['target_z']}")
-            else:
-                names.append(obj["name"])
+            names.append(obj["name"])
 
     task_entities = getattr(agent, "active_task_entities", {}) or {}
     if agent.task_state in {"job_pick", "job_mcq"}:
@@ -271,8 +280,6 @@ def _owned_food_and_drinks(agent) -> str:
 
 
 def _inventory_line(agent) -> str:
-    # Item 9 fix: include durability information so agents can plan
-    # hobby usage and anticipate item destruction.
     counts = Counter()
     durability_map = {}
     for it in agent.inventory:
@@ -437,6 +444,22 @@ def _nearby_estates(agent, world, max_show: int = 6) -> str:
     return ", ".join([s for _, s in out[:max_show]]) if out else "None"
 
 
+def _history_for_model(agent) -> list[dict]:
+    """
+    Provider tool roles are deprecated. Internally we still store tool results as role=tool,
+    but for prompting we render them as normal user transcript lines starting with:
+      RESULT (tool_name): ...
+    """
+    out: list[dict] = []
+    for m in list(agent.chat_history or []):
+        role = m.get("role", "")
+        if role == "tool":
+            out.append({"role": "user", "content": str(m.get("content", ""))})
+        else:
+            out.append(m)
+    return out
+
+
 def build_messages(agent_id: int, world, notifications: str) -> List[dict]:
     agent = world.agents[agent_id]
 
@@ -445,11 +468,11 @@ def build_messages(agent_id: int, world, notifications: str) -> List[dict]:
 
     system_content = agent.system_prompt
     market_status = "OPEN" if is_market_open(world.sim_time) else "CLOSED"
-    held = (
-        agent.currently_holding.get("item", "None")
-        if agent.currently_holding
-        else "None"
-    )
+
+    held = "None"
+    if agent.currently_holding:
+        # robust against malformed holding dict (missing 'item')
+        held = agent.currently_holding.get("item", "None") or "None"
 
     loc_label = _display_location(agent, world)
     loc_def = get_current_location_def(agent.x, agent.y, agent.z)
@@ -511,7 +534,7 @@ def build_messages(agent_id: int, world, notifications: str) -> List[dict]:
 
     return (
         [{"role": "system", "content": system_content}]
-        + list(agent.chat_history)
+        + _history_for_model(agent)
         + [{"role": "user", "content": user_msg}]
     )
 
@@ -596,7 +619,20 @@ def call_server(
     try:
         with urllib.request.urlopen(req) as res:
             res_data = json.loads(res.read().decode("utf-8"))
-            out = _normalize_assistant_output(res_data.get("content", ""))
+
+            raw = res_data.get("content", "") or ""
+            out = _normalize_assistant_output(raw)
+
+            # Attach raw for scheduler/logger (full raw response, then processing occurs)
+            if not hasattr(call_server, "last_raw"):
+                call_server.last_raw = {}  # type: ignore[attr-defined]
+            call_server.last_raw[int(agent_id)] = {  # type: ignore[attr-defined]
+                "provider": "local",
+                "model": "llama.cpp",
+                "content": str(raw),
+                "reasoning": "",
+            }
+
             prompt_tokens = res_data.get(
                 "tokens_evaluated", max(1, len(prompt_text) // CHARS_PER_TOKEN)
             )
@@ -606,4 +642,13 @@ def call_server(
             manage_slot(agent_id, action="save")
             return out, prompt_tokens, gen_tokens
     except Exception as e:
+        # Also attach the raw error string for consistent logging
+        if not hasattr(call_server, "last_raw"):
+            call_server.last_raw = {}  # type: ignore[attr-defined]
+        call_server.last_raw[int(agent_id)] = {  # type: ignore[attr-defined]
+            "provider": "local",
+            "model": "llama.cpp",
+            "content": f"[SERVER ERROR] {e}",
+            "reasoning": "",
+        }
         return f"[SERVER ERROR] {e}", 0, 0

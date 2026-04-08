@@ -1,22 +1,17 @@
 import os
 
 N_AGENTS = 6
-
 # With your stated server support, set to 262144.
 CONTEXT_SIZE = 262144
-
 # Keep generation bounded; tool calls should be short.
 MAX_NEW_TOKENS = 2048
-
 PASSIVE_TICK_SECONDS = 3600.0
 RANDOM_SEED = 42
-
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 CACHE_DIR = os.path.join(BASE_DIR, "cache")
 PROMPTS_DIR = os.path.join(BASE_DIR, "prompts")
 TOOLS_PATH = os.path.join(BASE_DIR, "tools.json")
-
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(CACHE_DIR, exist_ok=True)
 
@@ -26,18 +21,14 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 # IMPORTANT: STOCK_MU and STOCK_SIGMA are interpreted as per-HOUR parameters.
 # The market is advanced in smaller dt steps (MARKET_TICK_SECONDS) and the
 # GBM update scales correctly with dt.
-
 # Wild baseline volatility (per hour)
 STOCK_MU = 0.0005
 STOCK_SIGMA = 0.10
-
 # Separate market tick frequency (do NOT tie this to PASSIVE_TICK_SECONDS)
 MARKET_TICK_SECONDS = 300.0  # 5 minutes
-
 # Optional jump shocks (news-like sudden moves); probability is per hour.
 JUMP_PROB_PER_HOUR = 0.06
 JUMP_SIGMA = 0.20
-
 # Impact from agent trading volume
 IMPACT_FACTOR = 0.00015
 IMPACT_CLAMP_LO = 0.70
@@ -46,13 +37,12 @@ IMPACT_CLAMP_HI = 1.30
 CHARS_PER_TOKEN = 4
 CONTEXT_FILL_RATIO = 0.90
 SIM_HOURS_PER_YEAR = 8760
-
 MAX_RUNTIME_MINUTES = float(os.environ.get("MAX_RUNTIME_MINUTES", 600.0))
 
 # Inventory + economy
 MAX_INVENTORY = 20
-TAX_AMOUNT = 50.0
-TAX_EXEMPT_BELOW_CASH = 200.0  # scheduler currently uses 200.0 directly; keep for clarity.
+TAX_EXEMPT_BELOW_CASH = 200.0
+TAX_RATE = 0.05  # FIX 3: Proportional tax to prevent poverty attractor loop
 
 # Llama server + optional summarizer settings (summarization is disabled in utils.py now)
 LLAMA_CLI_PATH = os.environ.get("LLAMA_CLI_PATH", "llama-cli")

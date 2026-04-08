@@ -6,7 +6,11 @@ from datetime import datetime, timezone
 
 from python.config import LOG_DIR
 
-LOG_FULL_MESSAGES = str(os.environ.get("LOG_FULL_MESSAGES", "0")).lower() in ("1", "true", "yes")
+LOG_FULL_MESSAGES = str(os.environ.get("LOG_FULL_MESSAGES", "0")).lower() in (
+    "1",
+    "true",
+    "yes",
+)
 LOG_MAX_CHARS = int(os.environ.get("LOG_MAX_CHARS", "6000"))
 
 try:
@@ -128,7 +132,7 @@ def snapshot_agent(agent) -> dict:
         "hours_lived": agent.hours_lived,
         "awake_hours": agent.awake_hours,
         "total_prompt_tokens": agent.total_prompt_tokens,
-        "social_cooldowns": deepcopy(agent.social_cooldowns),
+        # FIX 7: social_cooldowns removed from AgentState (dead code)
         "last_action_result": agent.last_action_result,
         "vehicle_type": getattr(agent, "vehicle_type", ""),
         "vehicle_pos": (
@@ -162,6 +166,11 @@ def log_turn(
     prompt_chars: int = 0,
     notifications_shown: list | None = None,
     notifications_remaining: int = 0,
+    # New (API runner): raw reasoning + processed output
+    raw_provider: str | None = None,
+    raw_model: str | None = None,
+    raw_reasoning: str | None = None,
+    processed_output: str | None = None,
 ) -> None:
     system_prompt, user_observation = _extract_system_user(messages)
 
@@ -177,7 +186,15 @@ def log_turn(
         "user_observation": user_observation,
         "prompt_hash": prompt_hash,
         "prompt_chars": int(prompt_chars) if prompt_chars else 0,
+        # Raw provider-facing content (full)
+        "raw_provider": raw_provider,
+        "raw_model": raw_model,
         "raw_model_output": raw_output,
+        "raw_model_reasoning": raw_reasoning,
+        # Engine-facing processed content (after normalization)
+        "processed_model_output": processed_output
+        if processed_output is not None
+        else raw_output,
         "parsed_tool": parsed_tool,
         "parsed_args": parsed_args,
         "tool_result": result,
@@ -206,6 +223,11 @@ def log_io(
     raw_output: str,
     prompt_hash: str = "",
     prompt_chars: int = 0,
+    # New fields
+    raw_provider: str | None = None,
+    raw_model: str | None = None,
+    raw_reasoning: str | None = None,
+    processed_output: str | None = None,
 ) -> None:
     system_prompt, user_observation = _extract_system_user(messages)
 
@@ -217,7 +239,15 @@ def log_io(
         "user_observation": user_observation,
         "prompt_hash": prompt_hash,
         "prompt_chars": int(prompt_chars) if prompt_chars else 0,
-        "output_generated": raw_output,
+        # Raw provider-facing content (full)
+        "raw_provider": raw_provider,
+        "raw_model": raw_model,
+        "raw_model_output": raw_output,
+        "raw_model_reasoning": raw_reasoning,
+        # Engine-facing processed content (after normalization)
+        "processed_model_output": processed_output
+        if processed_output is not None
+        else raw_output,
     }
 
     if LOG_FULL_MESSAGES:
@@ -228,7 +258,13 @@ def log_io(
     _write(os.path.join(LOG_DIR, "global_io_dataset.jsonl"), io_entry)
 
 
-def log_death(agent, cause: str = "unknown", estate: dict = None, shares_liquidated: float = 0.0, pre_death_state: dict = None) -> None:
+def log_death(
+    agent,
+    cause: str = "unknown",
+    estate: dict = None,
+    shares_liquidated: float = 0.0,
+    pre_death_state: dict = None,
+) -> None:
     estate = estate or {"items": list(agent.inventory), "money": round(agent.money, 2)}
 
     final_stats = pre_death_state or {

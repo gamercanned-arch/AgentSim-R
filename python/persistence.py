@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, fields, is_dataclass
 from typing import Any, Dict
 
 from python.state import AgentState, WorldState
@@ -29,13 +29,35 @@ def _agent_to_dict(agent: AgentState) -> Dict[str, Any]:
     ):
         if hasattr(agent, k):
             extras[k] = getattr(agent, k)
+
     base["_extras"] = extras
     return base
 
 
 def _agent_from_dict(d: Dict[str, Any]) -> AgentState:
+    """
+    Forward-compatible loader:
+    - filters unknown keys not present in AgentState dataclass
+    - stores unknown keys inside _extras for later inspection
+    """
+    d = dict(d or {})
     extras = d.pop("_extras", {}) or {}
-    agent = AgentState(**d)
+
+    allowed = {f.name for f in fields(AgentState)}
+    clean: Dict[str, Any] = {}
+    unknown: Dict[str, Any] = {}
+
+    for k, v in d.items():
+        if k in allowed:
+            clean[k] = v
+        else:
+            unknown[k] = v
+
+    if unknown:
+        extras = dict(extras)
+        extras.setdefault("unknown_fields", {}).update(unknown)
+
+    agent = AgentState(**clean)
     for k, v in extras.items():
         setattr(agent, k, v)
     return agent

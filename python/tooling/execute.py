@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Callable, Dict, Tuple
+from typing import Callable, Dict, List, Tuple
 
 from python.config import TOOLS_PATH
 from python.tooling.parsing import parse_tool_calls
@@ -171,7 +171,67 @@ def _execute_one(name: str, args: dict, agent, world) -> Tuple[str, bool, int]:
         return f"Tool {name} crashed: {type(e).__name__}: {e}", False, 60
 
 
+def execute_tool_calls(tool_calls: List[dict], agent_id: int, world) -> Tuple[str, bool, int]:
+    """
+    Execute structured tool calls from API tool calling.
+
+    tool_calls format:
+      [{"id": "...", "name": "...", "args": {...}}, ...]
+
+    Sets:
+      agent._last_api_tool_steps = [{"id","name","args","result","success","cost"}, ...]
+    """
+    agent = world.agents.get(agent_id)
+    if not agent:
+        return "Agent not found.", False, 0
+    if not agent.alive:
+        return "Agent inactive.", False, 0
+
+    agent._last_api_tool_steps = []
+
+    if not tool_calls:
+        agent.failed_calls += 1
+        agent.last_parse_error = True
+        return "No tool calls provided.", False, 60
+
+    step_results = []
+    all_success = True
+    total_cost = 0
+    steps = []
+
+    for idx, tc in enumerate(tool_calls, start=1):
+        tid = str(tc.get("id", "") or "").strip()
+        name = str(tc.get("name", "") or "").strip()
+        args = tc.get("args", {}) or {}
+        if not isinstance(args, dict):
+            args = {}
+
+        # If provider omitted id, synthesize stable-ish id
+        if not tid:
+            tid = "call_" + uuid.uuid4().hex
+
+        res, suc, cost = _execute_one(name, args, agent, world)
+        all_success = all_success and suc
+        if suc:
+            total_cost += max(0, int(cost))
+        else:
+            total_cost += max(60, int(cost))
+
+        steps.append({"id": tid, "name": name, "args": args, "result": res, "success": bool(suc), "cost": int(cost)})
+        step_results.append(f"{idx}. {name}: {'OK' if suc else 'FAIL'} - {res}")
+
+    agent._last_api_tool_steps = steps
+
+    if len(tool_calls) == 1:
+        return steps[0]["result"], all_success, total_cost
+    return " | ".join(step_results), all_success, total_cost
+
+
 def execute_tool(tool_call_str: str, agent_id: int, world) -> Tuple[str, bool, int]:
+    """
+    Legacy XML path (local runner).
+    Also sets agent._last_api_tool_steps with synthesized call ids so tool-role history stays valid.
+    """
     calls, parse_error = parse_tool_calls(tool_call_str)
 
     agent = world.agents.get(agent_id)
@@ -200,9 +260,7 @@ def execute_tool(tool_call_str: str, agent_id: int, world) -> Tuple[str, bool, i
     if len(calls) == 1:
         name, args = calls[0]
         res, suc, cost = _execute_one(name, args, agent, world)
-        agent._last_api_tool_steps = [
-            {"id": new_id(), "name": name, "args": dict(args or {}), "result": res, "success": bool(suc), "cost": int(cost)}
-        ]
+        agent._last_api_tool_steps = [{"id": new_id(), "name": name, "args": dict(args or {}), "result": res, "success": bool(suc), "cost": int(cost)}]
         return res, suc, cost
 
     step_results = []
@@ -217,7 +275,6 @@ def execute_tool(tool_call_str: str, agent_id: int, world) -> Tuple[str, bool, i
             total_cost += max(0, int(cost))
         else:
             total_cost += max(60, int(cost))
-
         steps.append({"id": new_id(), "name": name, "args": dict(args or {}), "result": res, "success": bool(suc), "cost": int(cost)})
         step_results.append(f"{idx}. {name}: {'OK' if suc else 'FAIL'} - {res}")
 

@@ -9,5 +9,5 @@ Write an updated summary that is:
 - includes money, health/energy/hunger/hydration/stress/happiness changes if present
 - includes key social/relationship changes and conflicts
 - includes major movement/work/study outcomes
-
+- Do not output more than 16000 tokens (~10k words)
 Return ONLY the updated summary text.

@@ -2,7 +2,6 @@ import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-
 @dataclass
 class LocationDef:
     name: str
@@ -19,7 +18,6 @@ class LocationDef:
     entrance_x: Optional[float] = None
     entrance_y: Optional[float] = None
     entrance_z: Optional[float] = None
-
 
 PUBLIC_LOCATIONS_3D = [
     LocationDef(
@@ -250,7 +248,6 @@ PUBLIC_LOCATIONS_3D = [
     ),
 ]
 
-
 HOME_LOCATION_META: Dict[str, Dict] = {}
 HOME_LOTS_BY_TYPE: Dict[str, List[str]] = {
     "Small Apartment": [],
@@ -259,36 +256,36 @@ HOME_LOTS_BY_TYPE: Dict[str, List[str]] = {
     "Luxury House": [],
 }
 
-
 def _home_interactables(home_type: str, floor: int = 0) -> List[Dict]:
+    # FIX 8: Ground-floor-only simulation requires all home objects at Z=0.0
+    z_pos = 0.0
     if home_type == "Small Apartment":
         return [
-            {"name": "Bed", "z": floor},
-            {"name": "Kitchenette", "z": floor},
-            {"name": "Study Desk", "z": floor},
-            {"name": "Bookshelf", "z": floor},
+            {"name": "Bed", "z": z_pos},
+            {"name": "Kitchenette", "z": z_pos},
+            {"name": "Study Desk", "z": z_pos},
+            {"name": "Bookshelf", "z": z_pos},
         ]
     if home_type == "Apartment":
         return [
-            {"name": "Bed", "z": floor},
-            {"name": "Dining Table", "z": floor},
-            {"name": "TV", "z": floor},
-            {"name": "Desk", "z": floor},
+            {"name": "Bed", "z": z_pos},
+            {"name": "Dining Table", "z": z_pos},
+            {"name": "TV", "z": z_pos},
+            {"name": "Desk", "z": z_pos},
         ]
     if home_type == "House":
         return [
-            {"name": "Bed", "z": floor},
-            {"name": "Fridge", "z": floor},
-            {"name": "Couch", "z": floor},
-            {"name": "Dining Table", "z": floor},
+            {"name": "Bed", "z": z_pos},
+            {"name": "Fridge", "z": z_pos},
+            {"name": "Couch", "z": z_pos},
+            {"name": "Dining Table", "z": z_pos},
         ]
     return [
-        {"name": "King Bed", "z": floor},
-        {"name": "Home Theater", "z": floor},
-        {"name": "Minibar", "z": floor},
-        {"name": "Safe", "z": floor},
+        {"name": "King Bed", "z": z_pos},
+        {"name": "Home Theater", "z": z_pos},
+        {"name": "Minibar", "z": z_pos},
+        {"name": "Safe", "z": z_pos},
     ]
-
 
 def _register_home_lot(
     name: str,
@@ -328,9 +325,7 @@ def _register_home_lot(
         entrance_z=entrance_z,
     )
 
-
 HOME_LOCATIONS_3D: List[LocationDef] = []
-
 small_towers = [
     ("Maple", 760.0, 2180.0),
     ("Cedar", 860.0, 2180.0),
@@ -449,14 +444,11 @@ for idx, (base_x, base_y) in enumerate(lux_coords, start=1):
 
 LOCATIONS_3D = PUBLIC_LOCATIONS_3D + HOME_LOCATIONS_3D
 
-
 def _normalize_name(name: str) -> str:
     return str(name or "").strip().lower().replace("_", " ").replace("-", " ")
 
-
 def get_distance_3d(p1: tuple, p2: tuple) -> float:
     return math.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2 + (p1[2] - p2[2]) ** 2)
-
 
 def get_location_by_name(name: str) -> Optional[LocationDef]:
     wanted = _normalize_name(name)
@@ -465,14 +457,12 @@ def get_location_by_name(name: str) -> Optional[LocationDef]:
             return loc
     return None
 
-
 def get_location_center(loc: LocationDef) -> tuple:
     return (
         (loc.x_min + loc.x_max) / 2.0,
         (loc.y_min + loc.y_max) / 2.0,
         loc.z_min,
     )
-
 
 def is_point_in_loc(x: float, y: float, z: float, loc: LocationDef) -> bool:
     return (
@@ -481,22 +471,18 @@ def is_point_in_loc(x: float, y: float, z: float, loc: LocationDef) -> bool:
         and (loc.z_min <= z <= loc.z_max)
     )
 
-
 def get_current_location_def(x: float, y: float, z: float) -> Optional[LocationDef]:
     for loc in LOCATIONS_3D:
         if is_point_in_loc(x, y, z, loc):
             return loc
     return None
 
-
 def is_home_location(name: str) -> bool:
     return name in HOME_LOCATION_META
-
 
 def get_home_type_for_location(name: str) -> Optional[str]:
     meta = HOME_LOCATION_META.get(name)
     return meta["type"] if meta else None
-
 
 def describe_home_location(name: str) -> str:
     meta = HOME_LOCATION_META.get(name)
@@ -504,10 +490,8 @@ def describe_home_location(name: str) -> str:
         return name.replace("_", " ")
     return meta["label"]
 
-
 def get_home_lots_inventory() -> Dict[str, List[str]]:
     return {home_type: list(names) for home_type, names in HOME_LOTS_BY_TYPE.items()}
-
 
 def humanize_location_name(name: str) -> str:
     if not name:
@@ -516,24 +500,19 @@ def humanize_location_name(name: str) -> str:
         return describe_home_location(name)
     return name.replace("_", " ")
 
-
 def get_location_label(name: str) -> str:
     return humanize_location_name(name)
-
 
 def get_location_entrance_point(loc: LocationDef) -> tuple:
     if loc.entrance_x is not None and loc.entrance_y is not None and loc.entrance_z is not None:
         return (float(loc.entrance_x), float(loc.entrance_y), float(loc.entrance_z))
     return get_location_center(loc)
 
-
 def get_location_outside_entrance_point(loc: LocationDef, offset_m: float = 20.0) -> tuple:
     entrance = get_location_entrance_point(loc)
     ex, ey, ez = entrance
-
     if not loc.has_roof:
         return entrance
-
     distances = {
         "x_min": abs(ex - loc.x_min),
         "x_max": abs(ex - loc.x_max),
@@ -541,7 +520,6 @@ def get_location_outside_entrance_point(loc: LocationDef, offset_m: float = 20.0
         "y_max": abs(ey - loc.y_max),
     }
     nearest_side = min(distances, key=distances.get)
-
     if nearest_side == "x_min":
         return (loc.x_min - offset_m, ey, ez)
     if nearest_side == "x_max":

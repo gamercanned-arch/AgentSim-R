@@ -23,3 +23,5 @@ Clarifications:
 - give_money is a bank transfer: no proximity required, ignores sleeping/busy state, and only fails if the sender has insufficient funds.
 - change_status fails if the recipient is busy or sleeping (no queue).
 - move_to has no walk fallback if you cannot afford fuel; the move fails.
+
+You should think and give a reason before giving any action. Note that you will be talking to yourself as there is no human in the loop.

@@ -3,20 +3,17 @@ from __future__ import annotations
 import re
 from typing import Dict, List, Tuple
 
-_OUTER_FENCE_RE = re.compile(r"^\s*```[^\n]*\n(.*)\n```\s*$", re.DOTALL)
+_OUTER_FENCE_RE = re.compile(r"```(?:xml)?\s*\n(.*?)\n```", re.DOTALL | re.IGNORECASE)
 _PARAM_RE = re.compile(r"<parameter=([^>]+)>(.*?)</parameter>", re.DOTALL)
 _FUNC_RE = re.compile(r"<function=([^>\n]+)>(.*?)</function>", re.DOTALL)
 
 
 def _unwrap_outer_fence(text: str) -> str:
     s = str(text or "").strip()
-    m = re.match(_OUTER_FENCE_RE, s)
-    if not m:
-        return s
-
-    inner = m.group(1).strip()
-    if "<tool_call>" in inner and "</tool_call>" in inner:
-        return inner
+    blocks = _OUTER_FENCE_RE.findall(s)
+    for block in blocks:
+        if "<tool_call>" in block and "</tool_call>" in block:
+            return block.strip()
     return s
 
 
@@ -67,60 +64,42 @@ def _parse_tool_block(block: str) -> Tuple[Tuple[str, Dict[str, str]] | None, st
 
 
 def parse_tool_calls(tool_call_str: str) -> Tuple[List[Tuple[str, Dict[str, str]]], str | None]:
-    """
-    strict parser:
-    - optional single <think>...</think> block at the start
-    - then one or more <tool_call>...</tool_call> blocks
-    - only whitespace allowed outside those blocks
-    """
     try:
         s = _unwrap_outer_fence(tool_call_str or "").strip()
         if not s:
-            return [], "Parse error: Empty assistant output."
+            return[], "Parse error: Empty assistant output."
+
+        # Completely strip out all <think> blocks to avoid confusing the strict parser
+        s = re.sub(r"<think>.*?</think>", "", s, flags=re.DOTALL | re.IGNORECASE).strip()
 
         pos = 0
-        calls: List[Tuple[str, Dict[str, str]]] = []
+        calls: List[Tuple[str, Dict[str, str]]] =[]
 
-        pos = _skip_ws(s, pos)
-        if s.startswith("<think>", pos):
-            end = s.find("</think>", pos)
+        while True:
+            start = s.find("<tool_call>", pos)
+            if start == -1:
+                break
+            end = s.find("</tool_call>", start)
             if end == -1:
-                return [], "Parse error: Unbalanced <think> tags."
-            pos = end + len("</think>")
+                return[], "Parse error: Unbalanced <tool_call> tags."
 
-        pos = _skip_ws(s, pos)
-        if pos >= len(s):
-            return [], "Parse error: No <tool_call> tags found."
-
-        while pos < len(s):
-            if not s.startswith("<tool_call>", pos):
-                return [], "Parse error: Unexpected text outside tool calls."
-
-            end = s.find("</tool_call>", pos)
-            if end == -1:
-                return [], "Parse error: Unbalanced <tool_call> tags."
-
-            inner = s[pos + len("<tool_call>"):end]
+            inner = s[start + len("<tool_call>"):end]
             parsed, err = _parse_tool_block(inner)
             if err:
-                return [], err
+                return[], err
             calls.append(parsed)
 
             pos = end + len("</tool_call>")
-            pos = _skip_ws(s, pos)
 
         if not calls:
-            return [], "Parse error: No <tool_call> tags found."
+            return[], "Parse error: No <tool_call> tags found."
 
         return calls, None
     except Exception as e:
-        return [], f"Parse error: {e}"
+        return[], f"Parse error: {e}"
 
 
 def parse_tool_call(tool_call_str: str) -> Tuple[str, Dict[str, str]]:
-    """
-    compatibility wrapper for old code paths that expect exactly one tool call.
-    """
     calls, err = parse_tool_calls(tool_call_str)
     if err:
         return err, {}

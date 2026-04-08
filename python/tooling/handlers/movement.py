@@ -193,8 +193,6 @@ def handle_move_to(agent, world, args: dict):
         float(outside_xyz[1]),
         float(outside_xyz[2]),
     )
-    # Item 7 fix: include the building name in the location string so the
-    # agent knows which building they are outside of, not just "Outside".
     agent.location = (
         f"Outside {target_loc.name}" if target_loc.has_roof else target_loc.name
     )
@@ -268,8 +266,6 @@ def _entering_locked_home(agent, new_loc_name: str, world) -> Optional[str]:
 
 def handle_walk(agent, world, args: dict):
     direction = str(args.get("direction", "")).strip().lower()
-    # Item 12 fix: use 30/sqrt(2) ≈ 21.213 for diagonal displacement
-    # instead of rounded 21, to prevent cumulative positional drift.
     _diag = 30.0 / math.sqrt(2)
     delta_map = {
         "north": (0, 30),
@@ -301,11 +297,14 @@ def handle_walk(agent, world, args: dict):
             60,
         )
 
-    if new_loc and not check_open_hours(new_loc, world.sim_time):
-        agent.failed_calls += 1
-        return f"{new_loc.name} is currently closed.", False, 60
+    # Enforce open hours ONLY when transitioning into a location.
+    # Always allow moving within a location (even after close) and allow exiting to Outside.
+    if new_loc and (not current_loc or current_loc.name != new_loc.name):
+        if not check_open_hours(new_loc, world.sim_time):
+            agent.failed_calls += 1
+            return f"{new_loc.name} is currently closed.", False, 60
 
-    if new_loc:
+    if new_loc and (not current_loc or current_loc.name != new_loc.name):
         lock_reason = _entering_locked_home(agent, new_loc.name, world)
         if lock_reason:
             agent.failed_calls += 1

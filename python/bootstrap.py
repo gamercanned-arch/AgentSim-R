@@ -12,7 +12,12 @@ STARTING_PROFILES = {
     "Alex": {"wage": 50, "money": 5000, "home": "Small Apartment", "job": "developer"},
     "Jamie": {"wage": 60, "money": 6000, "home": "Apartment", "job": "nurse"},
     "Taylor": {"wage": 20, "money": 20, "home": "Small Apartment", "job": "student"},
-    "Jordan": {"wage": 20, "money": 2000, "home": "Apartment", "job": "delivery driver"},
+    "Jordan": {
+        "wage": 20,
+        "money": 2000,
+        "home": "Apartment",
+        "job": "delivery driver",
+    },
     "Mia": {"wage": 35, "money": 3500, "home": "House", "job": "teacher"},
     "Ethan": {"wage": 100, "money": 10000, "home": "Luxury House", "job": "founder"},
 }
@@ -21,7 +26,9 @@ STARTING_NAMES = ["Alex", "Jamie", "Taylor", "Jordan", "Mia", "Ethan"]
 STARTING_AGES = [28, 35, 21, 39, 41, 30]
 
 
-def build_starting_world(seed: int = RANDOM_SEED, n_agents: int = N_AGENTS) -> WorldState:
+def build_starting_world(
+    seed: int = RANDOM_SEED, n_agents: int = N_AGENTS
+) -> WorldState:
     random.seed(seed)
     np.random.seed(seed)
 
@@ -60,12 +67,16 @@ def build_starting_world(seed: int = RANDOM_SEED, n_agents: int = N_AGENTS) -> W
         if loc_def:
             agent.x = (loc_def.x_min + loc_def.x_max) / 2.0
             agent.y = (loc_def.y_min + loc_def.y_max) / 2.0
-            agent.z = loc_def.z_min
+            # FIX 8: Ground-floor-only — always clamp agent Z to 0.0 at bootstrap.
+            # Previously used loc_def.z_min which could be non-zero for upper-floor
+            # apartments, creating a coordinate mismatch with the Z=0 invariant.
+            agent.z = 0.0
 
             outside = get_location_outside_entrance_point(loc_def, offset_m=15.0)
-            agent.vehicle_x, agent.vehicle_y, agent.vehicle_z = outside
+            agent.vehicle_x, agent.vehicle_y = outside[0], outside[1]
+            agent.vehicle_z = 0.0  # FIX 8: clamp vehicle Z to ground plane
         else:
-            agent.vehicle_x, agent.vehicle_y, agent.vehicle_z = agent.x, agent.y, agent.z
+            agent.vehicle_x, agent.vehicle_y, agent.vehicle_z = agent.x, agent.y, 0.0
 
         agent.busy_until = random.uniform(world.sim_time, world.sim_time + 60.0)
         agent.current_activity = "idle"
