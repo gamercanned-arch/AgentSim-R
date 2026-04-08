@@ -11,7 +11,9 @@ LOG_FULL_MESSAGES = str(os.environ.get("LOG_FULL_MESSAGES", "0")).lower() in (
     "true",
     "yes",
 )
-LOG_MAX_CHARS = int(os.environ.get("LOG_MAX_CHARS", "6000"))
+
+# Safe casting with fallback for empty strings
+LOG_MAX_CHARS = int(os.environ.get("LOG_MAX_CHARS", "").strip() or "6000")
 
 try:
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -78,7 +80,7 @@ def _summarize_messages(messages: list) -> dict:
 def _extract_system_user(messages: list) -> tuple[str, str]:
     system = ""
     last_user = ""
-    for m in messages or []:
+    for m in messages or[]:
         if m.get("role") == "system" and not system:
             system = m.get("content", "") or ""
         if m.get("role") == "user":
@@ -132,7 +134,6 @@ def snapshot_agent(agent) -> dict:
         "hours_lived": agent.hours_lived,
         "awake_hours": agent.awake_hours,
         "total_prompt_tokens": agent.total_prompt_tokens,
-        # FIX 7: social_cooldowns removed from AgentState (dead code)
         "last_action_result": agent.last_action_result,
         "vehicle_type": getattr(agent, "vehicle_type", ""),
         "vehicle_pos": (
@@ -141,7 +142,7 @@ def snapshot_agent(agent) -> dict:
             round(getattr(agent, "vehicle_z", 0.0), 2),
         ),
         "recent_scenarios": deepcopy(getattr(agent, "recent_scenarios", {})),
-        "voicemail_inbox": deepcopy(getattr(agent, "voicemail_inbox", [])),
+        "voicemail_inbox": deepcopy(getattr(agent, "voicemail_inbox",[])),
     }
 
 
@@ -166,7 +167,6 @@ def log_turn(
     prompt_chars: int = 0,
     notifications_shown: list | None = None,
     notifications_remaining: int = 0,
-    # New (API runner): raw reasoning + processed output
     raw_provider: str | None = None,
     raw_model: str | None = None,
     raw_reasoning: str | None = None,
@@ -180,18 +180,16 @@ def log_turn(
         "agent_id": agent.id,
         "sim_time": sim_time,
         "notifications_presented": notifications,
-        "notifications_shown_list": notifications_shown or [],
+        "notifications_shown_list": notifications_shown or[],
         "notifications_remaining_count": int(notifications_remaining),
         "system_prompt": system_prompt,
         "user_observation": user_observation,
         "prompt_hash": prompt_hash,
         "prompt_chars": int(prompt_chars) if prompt_chars else 0,
-        # Raw provider-facing content (full)
         "raw_provider": raw_provider,
         "raw_model": raw_model,
         "raw_model_output": raw_output,
         "raw_model_reasoning": raw_reasoning,
-        # Engine-facing processed content (after normalization)
         "processed_model_output": processed_output
         if processed_output is not None
         else raw_output,
@@ -223,7 +221,6 @@ def log_io(
     raw_output: str,
     prompt_hash: str = "",
     prompt_chars: int = 0,
-    # New fields
     raw_provider: str | None = None,
     raw_model: str | None = None,
     raw_reasoning: str | None = None,
@@ -239,12 +236,10 @@ def log_io(
         "user_observation": user_observation,
         "prompt_hash": prompt_hash,
         "prompt_chars": int(prompt_chars) if prompt_chars else 0,
-        # Raw provider-facing content (full)
         "raw_provider": raw_provider,
         "raw_model": raw_model,
         "raw_model_output": raw_output,
         "raw_model_reasoning": raw_reasoning,
-        # Engine-facing processed content (after normalization)
         "processed_model_output": processed_output
         if processed_output is not None
         else raw_output,

@@ -2,6 +2,8 @@ import glob
 import os
 import time
 
+from dotenv import load_dotenv
+
 from python.bootstrap import build_starting_world
 from python.config import CACHE_DIR, LOG_DIR, MAX_RUNTIME_MINUTES, N_AGENTS
 from python.locations import describe_home_location
@@ -10,7 +12,9 @@ from python.persistence import load_world, save_exists, save_world
 from python.scheduler import run_tick
 
 SAVE_PATH = "saves/world.json"
-AUTOSAVE_TICKS = int(os.environ.get("AUTOSAVE_TICKS", "10"))
+
+# Safe casting with fallback for empty strings
+AUTOSAVE_TICKS = int(os.environ.get("AUTOSAVE_TICKS", "").strip() or "10")
 
 
 def _wipe_cache_and_logs() -> None:
@@ -35,6 +39,9 @@ def _wipe_cache_and_logs() -> None:
 
 
 def main():
+    # Force override=True so .env variables overwrite system variables
+    load_dotenv(override=True)
+
     if save_exists(SAVE_PATH):
         choice = input("Save found. Continue from save? [c]ontinue / [w]ipe: ").strip().lower()
         if choice.startswith("w"):
@@ -49,7 +56,6 @@ def main():
         _wipe_cache_and_logs()
         world = build_starting_world()
 
-    # Enforce floor-1-only on start (temporary global rule)
     for a in world.agents.values():
         a.z = 0.0
         if hasattr(a, "vehicle_z"):

@@ -18,18 +18,11 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 # -------------------------
 # Market model
 # -------------------------
-# IMPORTANT: STOCK_MU and STOCK_SIGMA are interpreted as per-HOUR parameters.
-# The market is advanced in smaller dt steps (MARKET_TICK_SECONDS) and the
-# GBM update scales correctly with dt.
-# Wild baseline volatility (per hour)
 STOCK_MU = 0.0005
 STOCK_SIGMA = 0.10
-# Separate market tick frequency (do NOT tie this to PASSIVE_TICK_SECONDS)
-MARKET_TICK_SECONDS = 300.0  # 5 minutes
-# Optional jump shocks (news-like sudden moves); probability is per hour.
+MARKET_TICK_SECONDS = 300.0 
 JUMP_PROB_PER_HOUR = 0.06
 JUMP_SIGMA = 0.20
-# Impact from agent trading volume
 IMPACT_FACTOR = 0.00015
 IMPACT_CLAMP_LO = 0.70
 IMPACT_CLAMP_HI = 1.30
@@ -37,29 +30,26 @@ IMPACT_CLAMP_HI = 1.30
 CHARS_PER_TOKEN = 4
 CONTEXT_FILL_RATIO = 0.90
 SIM_HOURS_PER_YEAR = 8760
-MAX_RUNTIME_MINUTES = float(os.environ.get("MAX_RUNTIME_MINUTES", 600.0))
+# Safe casting with fallback for empty strings
+MAX_RUNTIME_MINUTES = float(os.environ.get("MAX_RUNTIME_MINUTES", "").strip() or "600.0")
 
 # Inventory + economy
 MAX_INVENTORY = 20
 TAX_EXEMPT_BELOW_CASH = 200.0
-TAX_RATE = 0.05  # FIX 3: Proportional tax to prevent poverty attractor loop
+TAX_RATE = 0.05  
 
-# Llama server + optional summarizer settings (summarization is disabled in utils.py now)
 LLAMA_CLI_PATH = os.environ.get("LLAMA_CLI_PATH", "llama-cli")
 SUMMARIZER_MODEL_PATH = os.environ.get("SUMMARIZER_MODEL_PATH", "models/qwen3.5-0.8b.gguf")
 
-# Market hours
 MARKET_OPEN_HOUR = 9
 MARKET_OPEN_MINUTE = 30
 MARKET_CLOSE_HOUR = 16
 MARKET_CLOSE_MINUTE = 0
 
-# OpenAI-ish summarizer settings (unused now; kept to avoid breaking old imports)
 SUMMARY_TRIGGER_CYCLES = 30
 SUMMARY_COMPRESS_CYCLES = 20
 SUMMARY_KEEP_CYCLES = 10
 
-# Spatial constraints
 WORKPLACE_MAX_DISTANCE = 150.0
 STATUS_MAX_DISTANCE = 30.0
 GROUND_PICKUP_RADIUS = 20.0
@@ -67,7 +57,6 @@ AUTO_LOOT_RADIUS = 300.0
 OBJECT_Z_TOLERANCE = 1.0
 DROP_REPICKUP_COOLDOWN = 3600.0
 
-# Village stock (unchanged, but note: food now affects hydration too via tools.py)
 BASE_STORE_INVENTORY = {
     "Snacks": 35 * N_AGENTS,
     "Water": 35 * N_AGENTS,
@@ -85,15 +74,28 @@ BASE_STORE_INVENTORY = {
     "First aid kit": 3 * N_AGENTS
 }
 
-SUMMARIZER_PROMPT_TEMPLATE = """System: Compress the following logs into a dense, third-person summary. Focus only on major plot points, relationship changes, long-term goals, and financial/health impacts.
-Example 1 Input:
-[USER: Moved to Hospital. RESULT: Travelled to Hospital. USER: Used seek_medicalcare. RESULT: Health restored to 100, Money -$50.]
-Example 1 Output:
-Agent travelled to the hospital and spent $50 to fully restore their health.
-Example 2 Input:
-[USER: Talked to Alex "I hate you". RESULT: Alex stress increased. USER: Attacked Alex. RESULT: Dealt 15 damage. USER: Moved to Home. RESULT: Travelled Home.]
-Example 2 Output:
-Agent verbally insulted Alex, escalated to physical violence dealing 15 damage, and then fled back home.
-Actual Input:
+SUMMARIZER_PROMPT_TEMPLATE = """System: Compress and update the following logs into a dense, compact, third-person summary.
+
+Inputs:
+- Existing summary (may be empty):
+{existing_summary}
+
+- New turns to incorporate:
 {text_chunk}
-Actual Output:"""
+
+Instructions:
+- Produce a single updated summary that merges prior context with new events.
+- Be concise, factual, and information-dense.
+- Focus only on:
+  • Major actions and outcomes  
+  • Relationship changes, interactions, and conflicts  
+  • Long-term goals and progress  
+  • Financial impacts (money gained/lost)  
+  • Health, energy, hunger, hydration, stress, happiness changes  
+  • Significant movement, work, or study results  
+- Avoid minor or repetitive details.
+- Maintain continuity from the existing summary.
+- Use clear, natural language (no bullet points, no meta commentary).
+- Keep it under 16,000 tokens (~10k words).
+
+Return ONLY the updated summary text."""
