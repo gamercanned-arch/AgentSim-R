@@ -1,8 +1,11 @@
 import hashlib
 import math
+import os
 import random
 import re
+import time
 import uuid
+from datetime import datetime, timezone
 import numpy as np
 from python.config import (
     BASE_STORE_INVENTORY,
@@ -329,6 +332,7 @@ def _build_trimmed_messages(agent, world, notifications_text: str, context_limit
     base_estimated_tokens = estimate_prompt_tokens(
         base_msgs, prompt_text=base_prompt_text
     )
+    
     if base_estimated_tokens + MAX_NEW_TOKENS >= context_limit:
         agent.chat_history.clear()
         trimmed_msgs = build_messages(agent.id, world, notifications_text)
@@ -336,19 +340,22 @@ def _build_trimmed_messages(agent, world, notifications_text: str, context_limit
         trimmed_estimated_tokens = estimate_prompt_tokens(
             trimmed_msgs, prompt_text=trimmed_prompt_text
         )
+        
+        # FORCE TRUNCATION if still too big (prevents livelock)
+        if trimmed_estimated_tokens + MAX_NEW_TOKENS >= context_limit:
+            from python.config import CHARS_PER_TOKEN
+            overflow = (trimmed_estimated_tokens + MAX_NEW_TOKENS) - context_limit
+            chars_to_remove = int(overflow * CHARS_PER_TOKEN) + 200
+            
+            if len(agent.system_prompt) > chars_to_remove:
+                agent.system_prompt = agent.system_prompt[:-chars_to_remove] + "\n[System prompt truncated due to context limits]"
+                
+            # Rebuild one last time with truncated system prompt
+            return build_messages(agent.id, world, notifications_text), render_prompt(build_messages(agent.id, world, notifications_text)), context_limit - MAX_NEW_TOKENS - 10
+            
         return trimmed_msgs, trimmed_prompt_text, trimmed_estimated_tokens
-    msgs, prompt_text, estimated_tokens = (
-        base_msgs,
-        base_prompt_text,
-        base_estimated_tokens,
-    )
-    while estimated_tokens + MAX_NEW_TOKENS >= context_limit:
-        if not _pop_oldest_turn(agent):
-            break
-        msgs = build_messages(agent.id, world, notifications_text)
-        prompt_text = render_prompt(msgs)
-        estimated_tokens = estimate_prompt_tokens(msgs, prompt_text=prompt_text)
-    return msgs, prompt_text, estimated_tokens
+        
+    return base_msgs, base_prompt_text, base_estimated_tokens
 def _get_raw_llm_fields(agent_id: int, processed: str) -> tuple[str, str, str, str]:
     raw_provider = ""
     raw_model = ""
@@ -481,15 +488,22 @@ def run_tick(world) -> bool:
             world.sim_time = agent.busy_until
             return False
     pre_state = snapshot_agent(agent)
-    processed_out, prompt_tokens, gen_tokens = call_server(
-        msgs, agent.id, prompt_text=prompt_text
-    )
+
+    try:
+        processed_out, prompt_tokens, gen_tokens = call_server(
+            msgs, agent.id, prompt_text=prompt_text
+        )
+    except Exception as e:
+        processed_out = f"[SERVER ERROR] {e}"
+        prompt_tokens, gen_tokens = 0, 0
+
     raw_provider, raw_model, raw_content, raw_reasoning = _get_raw_llm_fields(
         agent.id, processed_out
     )
     current_user_text = (
         msgs[-1]["content"] if msgs and msgs[-1].get("role") == "user" else ""
     )
+
     log_io(
         agent.name,
         world.sim_time,
@@ -502,40 +516,6 @@ def run_tick(world) -> bool:
         raw_reasoning=raw_reasoning,
         processed_output=processed_out,
     )
-    if processed_out.startswith("[SERVER ERROR]"):
-        parsed_tool = "server_error"
-        parsed_args = {}
-        res, suc, cost = processed_out, False, 60
-        agent.last_action_result = res
-        agent.fail_counter += 1
-        if agent.alive:
-            agent.busy_until = max(world.sim_time, agent.busy_until) + cost
-            _commit_history(agent, current_user_text, processed_out, res)
-        _refresh_agent_activity(agent, world.sim_time)
-        post_state = snapshot_agent(agent)
-        log_turn(
-            agent=agent,
-            sim_time=world.sim_time,
-            notifications=notifications_text,
-            messages=msgs,
-            raw_output=raw_content,
-            raw_provider=raw_provider,
-            raw_model=raw_model,
-            raw_reasoning=raw_reasoning,
-            processed_output=processed_out,
-            parsed_tool=parsed_tool,
-            parsed_args=parsed_args,
-            result=res,
-            success=suc,
-            cost=int(cost),
-            pre_state=pre_state,
-            post_state=post_state,
-            prompt_hash=prompt_hash,
-            prompt_chars=prompt_chars,
-            notifications_shown=shown_lines,
-            notifications_remaining=remaining_count,
-        )
-        return False
     agent.total_prompt_tokens += int(prompt_tokens)
     parsed_calls, parse_error = parse_tool_calls(processed_out)
     if parse_error:
@@ -647,7 +627,9 @@ def _process_market_queues(world, sim_time: float) -> None:
                         f"MARKET: Queued sell executed at ${world.market_price:.4f} for {shares} share(s)."
                     )
                 else:
-                    remaining.append(order)
+                    agent.pending_notifications.append(
+                        f"MARKET: Queued sell for {shares} shares failed (insufficient shares)."
+                    )
         agent.pending_market_orders = remaining
 def _update_market_price(world, sim_time: float, dt_seconds: float) -> None:
     p = world.market_price
@@ -660,7 +642,7 @@ def _update_market_price(world, sim_time: float, dt_seconds: float) -> None:
             (STOCK_MU - 0.5 * (STOCK_SIGMA**2)) * dt_hours
             + STOCK_SIGMA * math.sqrt(dt_hours) * shock
         )
-        if random.random() < (JUMP_PROB_PER_HOUR * dt_hours):
+        if random.random() < (1.0 - math.exp(-JUMP_PROB_PER_HOUR * dt_hours)):
             j = np.random.normal(0.0, JUMP_SIGMA)
             gbm_multiplier *= math.exp(j)
         impact_multiplier = 1.0 + (IMPACT_FACTOR * world.net_volume_this_period)

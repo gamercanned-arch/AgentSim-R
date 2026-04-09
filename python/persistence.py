@@ -1,3 +1,4 @@
+# python/persistence.py
 from __future__ import annotations
 
 import json
@@ -6,7 +7,6 @@ from dataclasses import asdict, fields, is_dataclass
 from typing import Any, Dict
 
 from python.state import AgentState, WorldState
-
 
 SAVE_VERSION = 1
 
@@ -19,7 +19,13 @@ def _ensure_dir(path: str) -> None:
 
 def _agent_to_dict(agent: AgentState) -> Dict[str, Any]:
     base = asdict(agent) if is_dataclass(agent) else dict(agent.__dict__)
-    # Dynamic/optional fields (not in dataclass) that we may add later:
+    
+    # DO NOT persist history/prompts in the main world.json to save space
+    if "chat_history" in base:
+        base["chat_history"] = []
+    if "system_prompt" in base:
+        base["system_prompt"] = ""
+
     extras = {}
     for k in (
         "_sleep_start",
@@ -35,11 +41,6 @@ def _agent_to_dict(agent: AgentState) -> Dict[str, Any]:
 
 
 def _agent_from_dict(d: Dict[str, Any]) -> AgentState:
-    """
-    Forward-compatible loader:
-    - filters unknown keys not present in AgentState dataclass
-    - stores unknown keys inside _extras for later inspection
-    """
     d = dict(d or {})
     extras = d.pop("_extras", {}) or {}
 
@@ -115,17 +116,47 @@ def world_from_dict(payload: Dict[str, Any]) -> WorldState:
 
 def save_world(world: WorldState, path: str = "saves/world.json") -> None:
     _ensure_dir(path)
+    
+    # Save main file
     data = world_to_dict(world)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     os.replace(tmp, path)
 
+    # Save agent histories as side-cars
+    save_dir = os.path.dirname(os.path.abspath(path))
+    for agent in world.agents.values():
+        hist_path = os.path.join(save_dir, f"agent_history_{agent.id}.json")
+        hist_data = {
+            "system_prompt": agent.system_prompt,
+            "chat_history": agent.chat_history,
+            "summary_text": getattr(agent, "summary_text", ""),
+            "summary_turns_summarized": getattr(agent, "summary_turns_summarized", 0)
+        }
+        with open(hist_path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(hist_data, f, ensure_ascii=False, indent=2)
+        os.replace(hist_path + ".tmp", hist_path)
+
 
 def load_world(path: str = "saves/world.json") -> WorldState:
     with open(path, "r", encoding="utf-8") as f:
         payload = json.load(f)
-    return world_from_dict(payload)
+    world = world_from_dict(payload)
+
+    # Load agent histories side-cars
+    save_dir = os.path.dirname(os.path.abspath(path))
+    for agent in world.agents.values():
+        hist_path = os.path.join(save_dir, f"agent_history_{agent.id}.json")
+        if os.path.exists(hist_path):
+            with open(hist_path, "r", encoding="utf-8") as f:
+                hist_data = json.load(f)
+                agent.system_prompt = hist_data.get("system_prompt", "")
+                agent.chat_history = hist_data.get("chat_history", [])
+                agent.summary_text = hist_data.get("summary_text", "")
+                agent.summary_turns_summarized = hist_data.get("summary_turns_summarized", 0)
+                
+    return world
 
 
 def save_exists(path: str = "saves/world.json") -> bool:

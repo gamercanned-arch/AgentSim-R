@@ -25,3 +25,12 @@ Clarifications:
 - move_to has no walk fallback if you cannot afford fuel; the move fails.
 
 You should think and give a reason before giving any action. Note that you will be talking to yourself as there is no human in the loop.
+
+TOOL CALLING FORMAT: (EXAMPLE CALL)
+<tool_call>
+<function=move_to>
+<parameter=place>
+Library
+</parameter>
+</function>
+</tool_call>

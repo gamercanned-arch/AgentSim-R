@@ -889,7 +889,7 @@ class TestMultiHourSimulation:
 
     def test_multi_hour_simulation_no_crash(self, temp_logs, monkeypatch):
         import python.scheduler as scheduler
-
+    
         w = _mk_world()
         a = _add_agent(w, 0, "Alice")
         b = _add_agent(w, 1, "Bob")
@@ -900,10 +900,15 @@ class TestMultiHourSimulation:
             {"id": "w1", "item": "Water", "durability": 1, "bought": 0.0}
         )
         a.money = 500.0
+        a.social_fulfillment = 50.0 # <--- ADD THIS LINE
+        
         b.inventory.append(
             {"id": "s1", "item": "Snacks", "durability": 2, "bought": 0.0}
         )
         b.money = 500.0
+        b.social_fulfillment = 50.0 # <--- ADD THIS LINE
+        
+        # ... Rest of the test remains the same
 
         # Store stock
         w.store_inventory["Snacks"] = 20

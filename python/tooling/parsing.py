@@ -67,36 +67,46 @@ def parse_tool_calls(tool_call_str: str) -> Tuple[List[Tuple[str, Dict[str, str]
     try:
         s = _unwrap_outer_fence(tool_call_str or "").strip()
         if not s:
-            return[], "Parse error: Empty assistant output."
+            return [], "Parse error: Empty assistant output."
 
         # Completely strip out all <think> blocks to avoid confusing the strict parser
         s = re.sub(r"<think>.*?</think>", "", s, flags=re.DOTALL | re.IGNORECASE).strip()
 
         pos = 0
-        calls: List[Tuple[str, Dict[str, str]]] =[]
+        calls: List[Tuple[str, Dict[str, str]]] = []
 
         while True:
             start = s.find("<tool_call>", pos)
+            
             if start == -1:
+                # If there are no more tool calls, any remaining text is an error
+                leftover = s[pos:].strip()
+                if leftover:
+                    return [], "Parse error: Unexpected text outside tool calls."
                 break
+
+            # If there is text between the end of the last tool call and the start of this one
+            if s[pos:start].strip():
+                return [], "Parse error: Unexpected text outside tool calls."
+
             end = s.find("</tool_call>", start)
             if end == -1:
-                return[], "Parse error: Unbalanced <tool_call> tags."
+                return [], "Parse error: Unbalanced <tool_call> tags."
 
             inner = s[start + len("<tool_call>"):end]
             parsed, err = _parse_tool_block(inner)
             if err:
-                return[], err
+                return [], err
             calls.append(parsed)
 
             pos = end + len("</tool_call>")
 
         if not calls:
-            return[], "Parse error: No <tool_call> tags found."
+            return [], "Parse error: No <tool_call> tags found."
 
         return calls, None
     except Exception as e:
-        return[], f"Parse error: {e}"
+        return [], f"Parse error: {e}"
 
 
 def parse_tool_call(tool_call_str: str) -> Tuple[str, Dict[str, str]]:

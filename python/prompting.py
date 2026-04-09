@@ -223,12 +223,14 @@ def _visible_objects_here(agent) -> str:
 
     task_entities = getattr(agent, "active_task_entities", {}) or {}
     if agent.task_state in {"job_pick", "job_mcq"}:
-        prop = str(task_entities.get("prop", "")).strip()
-        target = str(task_entities.get("target", "")).strip()
-        if prop:
-            names.append(f"{prop} [task]")
-        if target:
-            names.append(f"{target} [task]")
+        task_loc = str(task_entities.get("location", "")).strip()
+        if loc_def and loc_def.name == task_loc:
+            prop = str(task_entities.get("prop", "")).strip()
+            target = str(task_entities.get("target", "")).strip()
+            if prop:
+                names.append(f"{prop} [task]")
+            if target:
+                names.append(f"{target} [task]")
 
     deduped = []
     seen = set()

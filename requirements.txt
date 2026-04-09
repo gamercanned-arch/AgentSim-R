@@ -5,3 +5,5 @@ jinja2
 pytest
 python-dotenv
 google-genai
+fastapi
+uvicorn

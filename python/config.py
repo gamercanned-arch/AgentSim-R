@@ -18,8 +18,8 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 # -------------------------
 # Market model
 # -------------------------
-STOCK_MU = 0.0005
-STOCK_SIGMA = 0.10
+STOCK_MU = 0.002
+STOCK_SIGMA = 0.05
 MARKET_TICK_SECONDS = 300.0 
 JUMP_PROB_PER_HOUR = 0.06
 JUMP_SIGMA = 0.20

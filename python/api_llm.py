@@ -1,9 +1,11 @@
+# python/api_llm.py
 from __future__ import annotations
 
 import json
 import os
 import random
 import re
+import time
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -24,16 +26,8 @@ def _approx_tokens_from_messages(messages: List[dict]) -> int:
         total_chars += len(str(m.get("content", ""))) + 1
     return max(1, total_chars // CHARS_PER_TOKEN)
 
-
-def _is_rate_limit_error(status_code: Optional[int], exc_text: str) -> bool:
-    if status_code == 429:
-        return True
-    s = (exc_text or "").lower()
-    return ("429" in s) or ("rate limit" in s) or ("ratelimit" in s) or ("quota" in s)
-
-
 def _tools_system_prefix(tools: List[dict]) -> str:
-    lines =[]
+    lines = []
     lines.append("# Tools")
     lines.append("")
     lines.append("You have access to the following functions:")
@@ -60,19 +54,11 @@ def _tools_system_prefix(tools: List[dict]) -> str:
     lines.append("")
     lines.append("<IMPORTANT>")
     lines.append("Reminder:")
-    lines.append(
-        "- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags"
-    )
+    lines.append("- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags")
     lines.append("- Required parameters MUST be specified")
-    lines.append(
-        "- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after"
-    )
-    lines.append(
-        "- If your model/provider supports a separate reasoning trace field, put reasoning there and keep assistant content focused on the tool call."
-    )
-    lines.append(
-        "- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls"
-    )
+    lines.append("- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after")
+    lines.append("- If your model/provider supports a separate reasoning trace field, put reasoning there and keep assistant content focused on the tool call.")
+    lines.append("- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls")
     lines.append("</IMPORTANT>")
     return "\n".join(lines)
 
@@ -81,9 +67,6 @@ _THINK_CLEAN_RE = re.compile(r"(</think>\s*){2,}", re.DOTALL)
 
 
 def _normalize_assistant_output_xml(out: str) -> str:
-    """
-    Normalization used by API runner. Fixed to safely handle unstructured outputs.
-    """
     out = (out or "").strip()
     if not out:
         return ""
@@ -124,7 +107,7 @@ class RawLLMResponse:
 
 class APIKeyRing:
     def __init__(self, keys: List[str]):
-        self.keys =[k for k in keys if k]
+        self.keys = [k for k in keys if k]
         self.idx = 0
 
     def __len__(self) -> int:
@@ -146,7 +129,7 @@ class APIKeyRing:
 
 def _sanitize_provider_messages(messages: List[dict]) -> List[dict]:
     out: List[dict] = []
-    for m in messages or[]:
+    for m in messages or []:
         role = str(m.get("role", "") or "")
         content = "" if m.get("content") is None else str(m.get("content"))
 
@@ -178,16 +161,14 @@ class LLMRouter:
         self.openrouter_headers = openrouter_headers or {}
 
         self.gemini_keys = APIKeyRing(self._load_keys("GEMINI_API_KEY"))
-
         self.last_raw: Dict[int, Dict[str, str]] = {}
 
     @staticmethod
     def _load_keys(prefix: str) -> List[str]:
-        keys =[]
+        keys = []
         i = 1
         consecutive_misses = 0
         
-        # Check for prefix_1, prefix_2 ... prefix_n dynamically
         while consecutive_misses < 20:
             k = (os.environ.get(f"{prefix}_{i}", "") or "").strip()
             if k:
@@ -198,7 +179,6 @@ class LLMRouter:
                 consecutive_misses += 1
             i += 1
             
-        # Also check the base prefix (e.g., GEMINI_API_KEY)
         k0 = (os.environ.get(prefix, "") or "").strip()
         if k0 and k0 not in keys:
             keys.insert(0, k0)
@@ -320,13 +300,24 @@ class LLMRouter:
             raise RuntimeError("No Gemini keys found (GEMINI_API_KEY_1..N).")
 
         max_tokens = int(cfg.max_output_tokens or self.max_output_tokens)
-        last_err_txt = ""
-
+        
         system_msg = next((m["content"] for m in messages if m["role"] == "system"), "")
-        chat_msgs =[m for m in messages if m["role"] != "system"]
+        chat_msgs = [m for m in messages if m["role"] != "system"]
 
-        # Safely merge consecutive messages of the same role (re-instantiating to prevent mutability crashes)
-        merged_contents =[]
+        is_gemma = "gemma" in model.lower()
+
+        if is_gemma and system_msg:
+            # Gemma models reject native system instructions via some endpoints.
+            # Merge system into the first user message.
+            if chat_msgs and chat_msgs[0]["role"] == "user":
+                chat_msgs[0]["content"] = f"{system_msg}\n\n{chat_msgs[0]['content']}"
+            else:
+                chat_msgs.insert(0, {"role": "user", "content": system_msg})
+            system_instruction = None
+        else:
+            system_instruction = system_msg if system_msg else None
+
+        merged_contents = []
         for m in chat_msgs:
             role = "model" if m["role"] == "assistant" else "user"
             content = str(m["content"])
@@ -340,53 +331,38 @@ class LLMRouter:
                 merged_contents.append(types.Content(role=role, parts=[types.Part.from_text(text=content)]))
 
         genai_config = types.GenerateContentConfig(
-            system_instruction=system_msg if system_msg else None,
+            system_instruction=system_instruction,
             temperature=float(cfg.temperature),
             top_p=float(cfg.top_p),
             max_output_tokens=max_tokens,
         )
 
-        for k in self.gemini_keys.iter_once_rotating():
-            try:
-                client = genai.Client(api_key=k)
-                response = client.models.generate_content(
-                    model=model,
-                    contents=merged_contents,
-                    config=genai_config
-                )
-                
-                content = response.text or ""
-                reasoning = ""
-                # Tags are handled by _normalize_assistant_output_xml
-
-                return RawLLMResponse(provider="gemini", model=model, content=content, reasoning=reasoning)
-            except APIError as e:
-                # Safely extract code attribute if present
-                status_code = getattr(e, 'code', getattr(e, 'status_code', None))
-                last_err_txt = str(e)
-                if _is_rate_limit_error(status_code, last_err_txt):
-                    continue
-                raise
-            except Exception as e:
-                last_err_txt = str(e)
-                raise
-
-        raise RuntimeError(f"Gemini failed. Last error: {last_err_txt[:4000]}")
+        # INFINITE RETRY LOOP for API Errors (Rate Limit, 500s)
+        while True:
+            for k in self.gemini_keys.iter_once_rotating():
+                try:
+                    client = genai.Client(api_key=k)
+                    response = client.models.generate_content(
+                        model=model,
+                        contents=merged_contents,
+                        config=genai_config
+                    )
+                    
+                    content = response.text or ""
+                    return RawLLMResponse(provider="gemini", model=model, content=content, reasoning="")
+                except Exception as e:
+                    err_str = str(e)
+                    print(f"    [API ERROR/RATE LIMIT] {err_str[:150]}... Sleeping 5s and retrying.")
+                    time.sleep(5)
 
 
 class Summarizer:
     DEFAULT_SYSTEM_PROMPT = (
-        "You are a summarization engine for a multi-agent village simulation.\n"
-        "Write a dense, factual summary.\n"
-        "Do NOT include tool-call XML.\n"
+        "You are an expert summarization engine for an agent in a life-simulation.\n"
+        "Your job is to merge recent events into the agent's existing running summary to create a cohesive, chronological narrative.\n"
+        "Retain relationships, key events, inventory changes, financial impacts, and overarching goals.\n"
+        "Maintain a dense, factual, third-person perspective. DO NOT output XML tools.\n"
         "Return ONLY the updated summary text."
-    )
-
-    DEFAULT_USER_TEMPLATE = (
-        "Existing summary (may be empty):\n"
-        "{existing_summary}\n\n"
-        "New turns to incorporate:\n"
-        "{chunk_text}\n"
     )
 
     def __init__(
@@ -395,12 +371,11 @@ class Summarizer:
         provider: str,
         model: str,
         *,
-        max_output_tokens: int = 2048,
-        temperature: float = 0.2,
+        max_output_tokens: int = 8192,
+        temperature: float = 0.8,
         top_p: float = 0.8,
-        user_template: str | None = None,
-        user_template_path: str | None = None,
         system_prompt: str | None = None,
+        **kwargs
     ):
         self.router = router
         self.provider = (provider or "gemini").strip().lower()
@@ -408,32 +383,19 @@ class Summarizer:
         self.max_output_tokens = int(max_output_tokens)
         self.temperature = float(temperature)
         self.top_p = float(top_p)
-
         self.system_prompt = (system_prompt or self.DEFAULT_SYSTEM_PROMPT).strip()
 
-        tmpl = user_template
-        if user_template_path:
-            try:
-                with open(user_template_path, "r", encoding="utf-8") as f:
-                    tmpl = f.read()
-            except OSError:
-                pass
-        self.user_template = (tmpl or self.DEFAULT_USER_TEMPLATE).strip() + "\n"
+    def summarize(self, existing_summary: str, prompt_text: str) -> str:
+        if existing_summary.strip():
+            user_msg = f"EXISTING NARRATIVE SUMMARY:\n{existing_summary}\n\nNEW EVENTS TO INTEGRATE:\n{prompt_text}\n\nTask: Rewrite and update the existing narrative to seamlessly include these new events."
+        else:
+            user_msg = f"NEW EVENTS TO SUMMARIZE:\n{prompt_text}\n\nTask: Write a cohesive narrative summary of these events."
 
-        if "{chunk_text}" not in self.user_template:
-            raise ValueError("Summarizer user template must include {chunk_text}.")
-        if "{existing_summary}" not in self.user_template:
-            raise ValueError("Summarizer user template must include {existing_summary}.")
-
-    def summarize(self, existing_summary: str, chunk_text: str) -> str:
-        user = self.user_template.format(
-            existing_summary=(existing_summary or "").strip(),
-            chunk_text=(chunk_text or "").strip(),
-        )
-        messages =[
+        messages = [
             {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": user},
+            {"role": "user", "content": user_msg},
         ]
+        
         out = self.router.call_specific_raw(
             self.provider,
             self.model,

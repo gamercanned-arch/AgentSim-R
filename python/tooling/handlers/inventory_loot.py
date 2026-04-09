@@ -17,11 +17,17 @@ from python.tooling.helpers import (
 )
 
 
-def _task_failure(agent, message: str, cost: int = 30):
+def _task_failure(agent, world, message: str, cost: int = 30):
     task_failures = int(agent.pending_task_data.get("task_failures", 0)) + 1
     agent.pending_task_data["task_failures"] = task_failures
 
     if task_failures >= 3:
+        spent = agent.pending_task_data.get("energy_spent", 0.0)
+        start = agent.pending_task_data.get("start_time", world.sim_time)
+        elapsed_hours = max(0.0, (world.sim_time - start) / 3600.0)
+        refund = max(0.0, spent - (elapsed_hours * 10.0))
+        agent.energy = min(100.0, agent.energy + refund)
+
         if agent.currently_holding and agent.currently_holding.get("id") == "job_prop":
             agent.currently_holding = None
         agent.task_state = "idle"
@@ -178,12 +184,13 @@ def handle_pick_item(agent, world, args: dict):
 
         if not required or not active_prop:
             agent.failed_calls += 1
-            return _task_failure(agent, "Task is missing required prop.", 30)
+            return _task_failure(agent, world, "Task is missing required prop.", 30)
 
         if not here or here.name != workplace:
             agent.failed_calls += 1
             return _task_failure(
                 agent,
+                world,
                 "You must remain in the correct task location to pick up the task prop.",
                 30,
             )
@@ -193,7 +200,7 @@ def handle_pick_item(agent, world, args: dict):
         ) != normalize_label(active_prop):
             agent.failed_calls += 1
             return _task_failure(
-                agent, f"You need to pick up the required task prop {required}.", 30
+                agent, world, f"You need to pick up the required task prop {required}.", 30
             )
 
         ok, why = store_currently_holding_if_possible(agent)
@@ -280,8 +287,15 @@ def handle_pick_item(agent, world, args: dict):
 
 def handle_drop_item(agent, world, args: dict):
     raw_item = str(args.get("item_name", "")).strip()
+    
+    # FIX: explicitly handle the empty case
+    if not raw_item and not agent.currently_holding:
+        agent.failed_calls += 1
+        return "You aren't holding anything to drop.", False, 30
+
     if not raw_item:
         if agent.currently_holding:
+#... continues as normal
             if agent.currently_holding.get("id") == "job_prop":
                 agent.failed_calls += 1
                 return (

@@ -295,8 +295,8 @@ def _register_home_lot(
     x_max: float,
     y_min: float,
     y_max: float,
-    z_min: float,
-    z_max: float,
+    z_min: float,  # Ignored, forced to 0.0 below to prevent floating bug
+    z_max: float,  # Ignored, forced to 10.0 below
     floor: int,
     entrance_x: float,
     entrance_y: float,
@@ -314,15 +314,15 @@ def _register_home_lot(
         x_max=x_max,
         y_min=y_min,
         y_max=y_max,
-        z_min=z_min,
-        z_max=z_max,
+        z_min=0.0,    # FIX: Forced to ground floor
+        z_max=10.0,   # FIX: Forced to ground floor bounds
         has_roof=True,
         open_time=0.0,
         close_time=24.0,
-        interactables=_home_interactables(home_type, int(z_min)),
+        interactables=_home_interactables(home_type, 0), # FIX: Z forced to 0
         entrance_x=entrance_x,
         entrance_y=entrance_y,
-        entrance_z=entrance_z,
+        entrance_z=0.0, # FIX: Entrance Z forced to 0
     )
 
 HOME_LOCATIONS_3D: List[LocationDef] = []

@@ -259,11 +259,9 @@ def handle_interact_with(agent, world, args: dict):
         required_target = str(flavor.get("obj", "")).strip()
         if not _task_location_ok(agent):
             agent.failed_calls += 1
-            _clear_task_state(agent, world, world.sim_time)
             return _task_failure(agent, "You left the required task location.", 60)
         if not _task_target_ok(agent, target) or normalize_label(target) != normalize_label(required_target):
             agent.failed_calls += 1
-            _clear_task_state(agent, world, world.sim_time)
             return _task_failure(
                 agent,
                 f"You must interact with {required_target} to complete the task.",
@@ -272,7 +270,6 @@ def handle_interact_with(agent, world, args: dict):
         choice = _extract_choice_letter(action)
         if choice not in {"A", "B", "C"}:
             agent.failed_calls += 1
-            _clear_task_state(agent, world, world.sim_time)
             return _task_failure(agent, "Answer must clearly be A, B, or C.", 60)
         data = dict(agent.pending_task_data)
         if agent.currently_holding and agent.currently_holding.get("id") == "job_prop":

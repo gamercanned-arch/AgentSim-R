@@ -2,6 +2,7 @@ from __future__ import annotations
 import random
 import re
 import uuid
+import math
 from copy import deepcopy
 from python.config import MAX_INVENTORY, STATUS_MAX_DISTANCE
 from python.tooling.death import kill_agent
@@ -12,6 +13,7 @@ from python.tooling.helpers import (
     is_busy,
     normalize_label,
 )
+DROP_REPICKUP_COOLDOWN = 3600.0
 MAX_SOCIAL_MESSAGE_LEN = 240
 def _clean_social_message(message: str, max_len: int = MAX_SOCIAL_MESSAGE_LEN) -> str:
     s = "" if message is None else str(message)
@@ -206,7 +208,8 @@ def handle_give_item(agent, world, args: dict):
                         "y": float(agent.y),
                         "z": 0.0, 
                         "dropper_id": agent.id,
-                        "repickup_block_until": world.sim_time,
+                        # FIX: Apply correct cooldown
+                        "repickup_block_until": float(world.sim_time + DROP_REPICKUP_COOLDOWN),
                     }
                 )
         agent.failed_calls += 1
@@ -221,7 +224,7 @@ def handle_give_money(agent, world, args: dict):
         amount = float(args.get("amount", 0))
     except (ValueError, TypeError):
         amount = 0.0
-    if amount <= 0:
+    if math.isnan(amount) or math.isinf(amount) or amount <= 0:
         agent.failed_calls += 1
         return "Invalid amount.", False, 60
     target = find_agent_by_name(world, t_name)
@@ -273,21 +276,10 @@ def handle_change_status(agent, world, args: dict):
             agent.failed_calls += 1
             return f"{target.name} is currently busy or sleeping (DND).", False, 60
         req_key = normalize_label(person)
-        if agent.pending_status_requests.get(req_key) == rel_type:
-            if rel_type == "single":
-                agent.relationship_partner = ""
-                target.relationship_partner = ""
-            else:
-                agent.relationship_partner = target.name
-                target.relationship_partner = agent.name
-            agent.relationships_status = rel_type
-            target.relationships_status = rel_type
-            del agent.pending_status_requests[req_key]
-            _social_bump(agent, target, 0.4)
-            target.pending_notifications.append(
-                f"{agent.name} accepted status: {rel_type}."
-            )
-            return f"Status with {target.name} changed to: {rel_type}.", True, 30
+        if target.pending_status_requests.get(normalize_label(agent.name)) == rel_type:
+            agent.failed_calls += 1
+            return f"You already requested status '{rel_type}' with {target.name}. Awaiting their response.", False, 30
+            
         target.pending_status_requests[normalize_label(agent.name)] = rel_type
         target.pending_notifications.append(
             f"{agent.name} requested relationship status: {rel_type}."
