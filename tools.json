@@ -2,7 +2,7 @@
   "tools": [
     {
       "name": "talk_to",
-      "description": "Talk to someone in person within 50m. Others nearby may overhear if they are awake and available.",
+      "description": "Talk to someone in person within 50m. Others nearby may overhear if they are awake and available. If they are busy or sleeping, you cannot talk right now, but they will receive a missed-interaction notification.",
       "params": ["person", "message"]
     },
     {
@@ -12,27 +12,27 @@
     },
     {
       "name": "buy_item",
-      "description": "Buy an item abstractly from village stock, or buy a home if you can afford it.",
+      "description": "Buy food abstractly from village stock from anywhere. Buy non-food items only while inside Store_A or Store_B. Buy vehicles only while inside Vehicle_Dealership. You may also buy a home if you can afford it.",
       "params": ["item"]
     },
     {
       "name": "work_job",
-      "description": "Work to earn money. Must be near the correct workplace and begins a 3-step interactive scenario.",
+      "description": "Work to earn money. Must be inside the correct workplace and begins a 3-step interactive scenario.",
       "params": ["jobname", "hours"]
     },
     {
       "name": "get_education",
-      "description": "Study to improve education and wage. Must be near School or Library and begins a 3-step exam scenario.",
+      "description": "Study to improve education and wage. Must be inside School or Library and begins a 3-step exam scenario.",
       "params": ["type", "hours"]
     },
     {
       "name": "seek_medicalcare",
-      "description": "Receive medical care near the Hospital.",
+      "description": "Receive medical care while inside the Hospital.",
       "params": []
     },
     {
       "name": "move_to",
-      "description": "Travel to a named location. Drains Energy based on distance.",
+      "description": "Travel to a named location such as Library, Store_A, Startup_Sowl, or Home_Taylor. Coordinates are not valid inputs. Drains Energy based on distance.",
       "params": ["place"]
     },
     {
@@ -42,7 +42,7 @@
     },
     {
       "name": "call_person",
-      "description": "Call someone by phone. No proximity required, but it fails if they are busy or sleeping.",
+      "description": "Call someone by phone. No proximity required. If they are busy or sleeping, the call goes to voicemail and they will receive it later.",
       "params": ["person", "message"]
     },
     {
@@ -52,12 +52,12 @@
     },
     {
       "name": "change_status",
-      "description": "Update your beliefs/goals, or request/accept a relationship status change with a nearby person.",
+      "description": "Update your beliefs/goals, or request/accept a relationship status change with a nearby person. If they are busy or sleeping, the action fails.",
       "params": ["person", "type", "value"]
     },
     {
       "name": "attack_person",
-      "description": "Attack another person within 20m. Fails if they are busy or sleeping.",
+      "description": "Attack another person within 20m. If the target is sleeping, the attack succeeds (they may wake). If the target is in a work/study task, the task is interrupted and the attack proceeds. If the target is busy for other reasons, the attack fails.",
       "params": ["person"]
     },
     {
@@ -82,17 +82,22 @@
     },
     {
       "name": "give_item",
-      "description": "Give an item from your hand or inventory to someone within 20m. Fails if they are busy.",
+      "description": "Give an item from your hand or inventory to someone within 20m. If they are busy or sleeping, the delivery is queued and will be delivered when they are available. The item is escrowed immediately.",
       "params": ["person", "item"]
     },
     {
       "name": "give_money",
-      "description": "Transfer money to someone within 20m. Fails if they are busy or sleeping.",
+      "description": "Transfer money by bank transfer. No proximity required. Ignores busy/sleeping. Only fails if the sender has insufficient funds. On insufficient funds, both sender and recipient are notified.",
       "params": ["person", "amount"]
     },
     {
       "name": "pick_item",
-      "description": "Move an item from inventory to your hand, or pick up a nearby dropped item or corpse loot item. Use item_name='None' or 'store' to put away what you are holding.",
+      "description": "Pick up a nearby dropped ground item into your hand, or pick up the required task prop during an active work/study task. Corpse estate loot is collected automatically when you get close enough.",
+      "params": ["item_name"]
+    },
+    {
+      "name": "hold_item",
+      "description": "Move an item from your inventory into your hand, or store your currently held item back into inventory by using item_name as store, none, unequip, or put away. Required task props cannot be stored away until the task ends.",
       "params": ["item_name"]
     },
     {

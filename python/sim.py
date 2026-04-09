@@ -1,59 +1,24 @@
 import glob
 import os
-import random
 import time
 
-import numpy as np
+from dotenv import load_dotenv
 
-from config import BASE_STORE_INVENTORY, CACHE_DIR, LOG_DIR, MAX_RUNTIME_MINUTES, N_AGENTS, RANDOM_SEED
-from locations import describe_home_location, get_location_by_name
-from logger import log_global
-from scheduler import run_tick
-from state import AgentState, WorldState
+from python.bootstrap import build_starting_world
+from python.config import CACHE_DIR, LOG_DIR, MAX_RUNTIME_MINUTES, N_AGENTS
+from python.locations import describe_home_location
+from python.logger import log_global
+from python.persistence import load_world, save_exists, save_world
+from python.scheduler import run_tick
 
-_STARTING_PROFILES = {
-    "Alex": {
-        "wage": 50,
-        "money": 5000,
-        "home": "Small Apartment",
-        "job": "developer",
-    },
-    "Jamie": {
-        "wage": 60,
-        "money": 6000,
-        "home": "Apartment",
-        "job": "nurse",
-    },
-    "Taylor": {
-        "wage": 20,
-        "money": 20,
-        "home": "Small Apartment",
-        "job": "student",
-    },
-    "Jordan": {
-        "wage": 20,
-        "money": 2000,
-        "home": "Apartment",
-        "job": "delivery driver",
-    },
-    "Mia": {
-        "wage": 35,
-        "money": 3500,
-        "home": "House",
-        "job": "teacher",
-    },
-    "Ethan": {
-        "wage": 100,
-        "money": 10000,
-        "home": "Luxury House",
-        "job": "founder",
-    },
-}
+SAVE_PATH = "saves/world.json"
+
+# Safe casting with fallback for empty strings
+AUTOSAVE_TICKS = int(os.environ.get("AUTOSAVE_TICKS", "").strip() or "10")
 
 
-def main():
-    print("Sweeping old cache and log files for a clean simulation start...")
-
+def _wipe_cache_and_logs() -> None:
+    print("Wiping cache, logs, and save for a clean simulation start...")
     for f in glob.glob(os.path.join(CACHE_DIR, "*.bin")):
         try:
             os.remove(f)
@@ -66,61 +31,41 @@ def main():
         except OSError:
             pass
 
-    random.seed(RANDOM_SEED)
-    np.random.seed(RANDOM_SEED)
+    try:
+        if os.path.exists(SAVE_PATH):
+            os.remove(SAVE_PATH)
+    except OSError:
+        pass
 
-    world = WorldState()
-    world.store_inventory = dict(BASE_STORE_INVENTORY)
 
-    # Start at 08:00 Monday so agents begin in a more actionable part of the day.
-    world.sim_time = 8 * 3600
-    world.last_passive = world.sim_time
+def main():
+    # Force override=True so .env variables overwrite system variables
+    load_dotenv(override=True)
 
-    names = ["Alex", "Jamie", "Taylor", "Jordan", "Mia", "Ethan"]
-    ages = [28, 35, 21, 39, 41, 30]
+    if save_exists(SAVE_PATH):
+        choice = input("Save found. Continue from save? [c]ontinue / [w]ipe: ").strip().lower()
+        if choice.startswith("w"):
+            _wipe_cache_and_logs()
+            world = build_starting_world()
+        else:
+            world = load_world(SAVE_PATH)
+    else:
+        choice = input("No save found. Start fresh? [y]/n: ").strip().lower()
+        if choice.startswith("n"):
+            return
+        _wipe_cache_and_logs()
+        world = build_starting_world()
 
-    if N_AGENTS > len(names):
-        raise ValueError(f"N_AGENTS={N_AGENTS} exceeds configured starting profiles.")
+    for a in world.agents.values():
+        a.z = 0.0
+        if hasattr(a, "vehicle_z"):
+            a.vehicle_z = 0.0
 
-    for i in range(N_AGENTS):
-        name = names[i]
-        profile = _STARTING_PROFILES[name]
-
-        agent = AgentState(
-            id=i,
-            name=name,
-            age=ages[i],
-        )
-
-        agent.hourly_wage = profile["wage"]
-        agent.money = profile["money"]
-        agent.job = profile["job"]
-
-        home_type = profile["home"]
-        home_location = world.allocate_home_lot(home_type)
-        if not home_location:
-            raise RuntimeError(f"No vacant home lots available for starting home type '{home_type}'.")
-
-        agent.current_home_type = home_type
-        agent.home_location = home_location
-        agent.owned_locations = [home_location]
-        agent.location = home_location
-
-        loc_def = get_location_by_name(home_location)
-        if loc_def:
-            agent.x = (loc_def.x_min + loc_def.x_max) / 2.0
-            agent.y = (loc_def.y_min + loc_def.y_max) / 2.0
-            agent.z = loc_def.z_min
-
-        agent.busy_until = random.uniform(world.sim_time, world.sim_time + 60.0)
-        agent.current_activity = "idle"
-
-        world.agents[i] = agent
-
+    for agent in world.agents.values():
         print(
             f"Initialized {agent.name:>6s} | Job: {agent.job:<15s} | "
-            f"Home: Home_{agent.name} ({describe_home_location(home_location)}) | "
-            f"Cash: ${agent.money:.2f}"
+            f"Home: Home_{agent.name} ({describe_home_location(agent.home_location)}) | "
+            f"Cash: ${agent.money:.2f} | Vehicle: {agent.vehicle_type}"
         )
 
     print(f"\nAgentSim-R starting...\nTime limit: {MAX_RUNTIME_MINUTES}m")
@@ -134,8 +79,11 @@ def main():
             if elapsed_minutes >= MAX_RUNTIME_MINUTES:
                 break
 
-            context_full = run_tick(world)
+            run_tick(world)
             tick += 1
+
+            if AUTOSAVE_TICKS > 0 and tick % AUTOSAVE_TICKS == 0:
+                save_world(world, SAVE_PATH)
 
             alive = sum(1 for a in world.agents.values() if a.alive)
 
@@ -145,13 +93,15 @@ def main():
                     f"Alive: {alive}/{N_AGENTS} | Mkt: ${world.market_price:.2f}"
                 )
 
-            if alive == 0 or context_full:
+            if alive == 0:
                 break
 
     except KeyboardInterrupt:
         print("\n[USER ABORTED]")
     except Exception as e:
         print(f"\n[FATAL ERROR] {str(e)}")
+
+    save_world(world, SAVE_PATH)
 
     log_global(
         {
@@ -160,6 +110,7 @@ def main():
             "sim_time_hours": round(world.sim_time / 3600.0, 2),
             "alive_agents": sum(1 for a in world.agents.values() if a.alive),
             "market_price": round(world.market_price, 2),
+            "runner": "python/sim.py",
         }
     )
     print("\nSimulation complete.")

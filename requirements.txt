@@ -2,3 +2,8 @@ requests
 numpy
 huggingface_hub
 jinja2
+pytest
+python-dotenv
+google-genai
+fastapi
+uvicorn

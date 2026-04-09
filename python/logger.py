@@ -1,9 +1,19 @@
+import hashlib
 import json
 import os
 from copy import deepcopy
 from datetime import datetime, timezone
 
-from config import LOG_DIR
+from python.config import LOG_DIR
+
+LOG_FULL_MESSAGES = str(os.environ.get("LOG_FULL_MESSAGES", "0")).lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+# Safe casting with fallback for empty strings
+LOG_MAX_CHARS = int(os.environ.get("LOG_MAX_CHARS", "").strip() or "6000")
 
 try:
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -16,17 +26,66 @@ except OSError as e:
 
 def _write(path: str, data: dict) -> None:
     data["timestamp"] = datetime.now(timezone.utc).isoformat()
-    try:
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(data, ensure_ascii=False) + "\n")
-    except OSError as e:
-        print(f"[LOGGER ERROR] Could not write to {path}: {e}")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(data, ensure_ascii=False) + "\n")
 
 
 def _clean_item(item):
     if item is None:
         return None
     return deepcopy(item)
+
+
+def _truncate(text: str, max_chars: int = LOG_MAX_CHARS) -> str:
+    text = "" if text is None else str(text)
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 20] + f"...(truncated,{len(text)} chars)"
+
+
+def _sha16(text: str) -> str:
+    b = (text or "").encode("utf-8", errors="ignore")
+    return hashlib.sha256(b).hexdigest()[:16]
+
+
+def _summarize_messages(messages: list) -> dict:
+    if not messages:
+        return {"message_count": 0}
+
+    role_counts = {}
+    last_user = ""
+    last_assistant = ""
+    system_hash = ""
+
+    for m in messages:
+        role = m.get("role", "")
+        role_counts[role] = role_counts.get(role, 0) + 1
+
+        if role == "system":
+            system_hash = _sha16(m.get("content", ""))
+        elif role == "user":
+            last_user = m.get("content", "") or last_user
+        elif role == "assistant":
+            last_assistant = m.get("content", "") or last_assistant
+
+    return {
+        "message_count": len(messages),
+        "role_counts": role_counts,
+        "system_hash": system_hash,
+        "last_user_preview": _truncate(last_user, 2000),
+        "last_assistant_preview": _truncate(last_assistant, 1200),
+    }
+
+
+def _extract_system_user(messages: list) -> tuple[str, str]:
+    system = ""
+    last_user = ""
+    for m in messages or[]:
+        if m.get("role") == "system" and not system:
+            system = m.get("content", "") or ""
+        if m.get("role") == "user":
+            last_user = m.get("content", "") or last_user
+    return system, last_user
 
 
 def snapshot_agent(agent) -> dict:
@@ -37,6 +96,7 @@ def snapshot_agent(agent) -> dict:
         "age": agent.age,
         "health": round(agent.health, 2),
         "energy": round(agent.energy, 2),
+        "hydration": round(getattr(agent, "hydration", 0.0), 2),
         "happiness": round(agent.happiness, 2),
         "stress": round(agent.stress, 2),
         "hunger": round(agent.hunger, 2),
@@ -63,6 +123,7 @@ def snapshot_agent(agent) -> dict:
         "current_activity": agent.current_activity,
         "task_state": agent.task_state,
         "pending_task_data": deepcopy(agent.pending_task_data),
+        "active_task_entities": deepcopy(getattr(agent, "active_task_entities", {})),
         "inventory": deepcopy(agent.inventory),
         "currently_holding": _clean_item(agent.currently_holding),
         "pending_notifications": list(agent.pending_notifications),
@@ -73,9 +134,15 @@ def snapshot_agent(agent) -> dict:
         "hours_lived": agent.hours_lived,
         "awake_hours": agent.awake_hours,
         "total_prompt_tokens": agent.total_prompt_tokens,
-        "social_cooldowns": deepcopy(agent.social_cooldowns),
         "last_action_result": agent.last_action_result,
-        "rolling_summary": agent.rolling_summary,
+        "vehicle_type": getattr(agent, "vehicle_type", ""),
+        "vehicle_pos": (
+            round(getattr(agent, "vehicle_x", 0.0), 2),
+            round(getattr(agent, "vehicle_y", 0.0), 2),
+            round(getattr(agent, "vehicle_z", 0.0), 2),
+        ),
+        "recent_scenarios": deepcopy(getattr(agent, "recent_scenarios", {})),
+        "voicemail_inbox": deepcopy(getattr(agent, "voicemail_inbox",[])),
     }
 
 
@@ -89,22 +156,43 @@ def log_turn(
     notifications: str,
     messages: list,
     raw_output: str,
-    parsed_tool: str,
-    parsed_args: dict,
+    parsed_tool,
+    parsed_args,
     result: str,
     success: bool,
     cost: int,
     pre_state: dict,
     post_state: dict,
+    prompt_hash: str = "",
+    prompt_chars: int = 0,
+    notifications_shown: list | None = None,
+    notifications_remaining: int = 0,
+    raw_provider: str | None = None,
+    raw_model: str | None = None,
+    raw_reasoning: str | None = None,
+    processed_output: str | None = None,
 ) -> None:
+    system_prompt, user_observation = _extract_system_user(messages)
+
     entry = {
         "event": "turn",
         "agent": agent.name,
         "agent_id": agent.id,
         "sim_time": sim_time,
         "notifications_presented": notifications,
-        "input_messages": messages,
+        "notifications_shown_list": notifications_shown or[],
+        "notifications_remaining_count": int(notifications_remaining),
+        "system_prompt": system_prompt,
+        "user_observation": user_observation,
+        "prompt_hash": prompt_hash,
+        "prompt_chars": int(prompt_chars) if prompt_chars else 0,
+        "raw_provider": raw_provider,
+        "raw_model": raw_model,
         "raw_model_output": raw_output,
+        "raw_model_reasoning": raw_reasoning,
+        "processed_model_output": processed_output
+        if processed_output is not None
+        else raw_output,
         "parsed_tool": parsed_tool,
         "parsed_args": parsed_args,
         "tool_result": result,
@@ -113,6 +201,12 @@ def log_turn(
         "pre_state": pre_state,
         "post_state": post_state,
     }
+
+    if LOG_FULL_MESSAGES:
+        entry["input_messages"] = messages
+    else:
+        entry["input_messages_summary"] = _summarize_messages(messages)
+
     log_agent(agent.id, entry)
 
 
@@ -120,23 +214,58 @@ def log_global(event: dict) -> None:
     _write(os.path.join(LOG_DIR, "global_summary.jsonl"), event)
 
 
-def log_io(agent_name: str, sim_time: float, messages: list, raw_output: str) -> None:
+def log_io(
+    agent_name: str,
+    sim_time: float,
+    messages: list,
+    raw_output: str,
+    prompt_hash: str = "",
+    prompt_chars: int = 0,
+    raw_provider: str | None = None,
+    raw_model: str | None = None,
+    raw_reasoning: str | None = None,
+    processed_output: str | None = None,
+) -> None:
+    system_prompt, user_observation = _extract_system_user(messages)
+
     io_entry = {
         "event": "io",
         "agent": agent_name,
         "sim_time": sim_time,
-        "input_prompt": messages,
-        "output_generated": raw_output,
+        "system_prompt": system_prompt,
+        "user_observation": user_observation,
+        "prompt_hash": prompt_hash,
+        "prompt_chars": int(prompt_chars) if prompt_chars else 0,
+        "raw_provider": raw_provider,
+        "raw_model": raw_model,
+        "raw_model_output": raw_output,
+        "raw_model_reasoning": raw_reasoning,
+        "processed_model_output": processed_output
+        if processed_output is not None
+        else raw_output,
     }
+
+    if LOG_FULL_MESSAGES:
+        io_entry["input_prompt"] = messages
+    else:
+        io_entry["input_prompt_summary"] = _summarize_messages(messages)
+
     _write(os.path.join(LOG_DIR, "global_io_dataset.jsonl"), io_entry)
 
 
-def log_death(agent, cause: str = "unknown", estate: dict = None, shares_liquidated: float = 0.0, pre_death_state: dict = None) -> None:
+def log_death(
+    agent,
+    cause: str = "unknown",
+    estate: dict = None,
+    shares_liquidated: float = 0.0,
+    pre_death_state: dict = None,
+) -> None:
     estate = estate or {"items": list(agent.inventory), "money": round(agent.money, 2)}
 
     final_stats = pre_death_state or {
         "health": round(agent.health, 2),
         "energy": round(agent.energy, 2),
+        "hydration": round(getattr(agent, "hydration", 0.0), 2),
         "happiness": round(agent.happiness, 2),
         "stress": round(agent.stress, 2),
         "hunger": round(agent.hunger, 2),
@@ -151,6 +280,7 @@ def log_death(agent, cause: str = "unknown", estate: dict = None, shares_liquida
         "home_location": agent.home_location,
         "job": agent.job,
         "beliefs": agent.beliefs,
+        "vehicle_type": getattr(agent, "vehicle_type", ""),
     }
 
     death_entry = {
