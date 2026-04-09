@@ -24,8 +24,8 @@ Clarifications:
 - change_status fails if the recipient is busy or sleeping (no queue).
 - move_to has no walk fallback if you cannot afford fuel; the move fails.
 
-You should think and give a reason before giving any action. Note that you will be talking to yourself as there is no human in the loop.
-
+You MUST think and give a reason before giving any action. Note that you will be talking to yourself as there is no human in the loop.
+You MUST place your reason in <reason_action> ... </reason_action>
 TOOL CALLING FORMAT: (EXAMPLE CALL)
 <tool_call>
 <function=move_to>

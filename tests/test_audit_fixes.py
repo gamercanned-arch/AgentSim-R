@@ -12,9 +12,7 @@ import pytest
 from conftest import StubServer, last_user_observation, tool_xml
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _mk_world():
@@ -41,9 +39,7 @@ def _add_agent(world, agent_id: int, name: str):
     return a
 
 
-# ---------------------------------------------------------------------------
 # Item 1 & 2: starvation/dehydration damage ordering
-# ---------------------------------------------------------------------------
 
 
 class TestStarvationDehydrationOrdering:
@@ -149,9 +145,7 @@ class TestStarvationDehydrationOrdering:
         assert a.alive is False
 
 
-# ---------------------------------------------------------------------------
-# Item 3: emergency hunger check ordering
-# ---------------------------------------------------------------------------
+# Item 3: emergency hunger check ordering=
 
 
 class TestEmergencyHungerOrdering:
@@ -256,9 +250,9 @@ class TestEmergencyHungerOrdering:
         assert not has_emergency_note
 
 
-# ---------------------------------------------------------------------------
+
 # Item 4: double energy deduction in work/study
-# ---------------------------------------------------------------------------
+
 
 
 class TestWorkStudyEnergyDeduction:
@@ -322,9 +316,9 @@ class TestWorkStudyEnergyDeduction:
         assert "energy" in res.lower()
 
 
-# ---------------------------------------------------------------------------
+
 # Item 5: infinite context-exceeded penalty loop
-# ---------------------------------------------------------------------------
+
 
 
 class TestContextExceededLoop:
@@ -392,9 +386,9 @@ class TestContextExceededLoop:
         )
 
 
-# ---------------------------------------------------------------------------
+
 # Item 6: chat history sanitization
-# ---------------------------------------------------------------------------
+
 
 
 class TestChatHistorySanitization:
@@ -453,9 +447,9 @@ class TestChatHistorySanitization:
         )
 
 
-# ---------------------------------------------------------------------------
+
 # Item 7: location string for roofed buildings
-# ---------------------------------------------------------------------------
+
 
 
 class TestMoveToLocationString:
@@ -498,9 +492,9 @@ class TestMoveToLocationString:
         assert a.location == "Park_Central"
 
 
-# ---------------------------------------------------------------------------
+
 # Item 8: energy recovery during sleep
-# ---------------------------------------------------------------------------
+
 
 
 class TestSleepEnergyRecovery:
@@ -553,9 +547,9 @@ class TestSleepEnergyRecovery:
         assert a.is_sleeping is False
 
 
-# ---------------------------------------------------------------------------
+
 # Item 9: durability in inventory display
-# ---------------------------------------------------------------------------
+
 
 
 class TestInventoryDurabilityDisplay:
@@ -608,9 +602,9 @@ class TestInventoryDurabilityDisplay:
         assert result == "None"
 
 
-# ---------------------------------------------------------------------------
+
 # Item 10: drop_item wildcard for held item
-# ---------------------------------------------------------------------------
+
 
 
 class TestDropItemWildcard:
@@ -666,9 +660,9 @@ class TestDropItemWildcard:
         assert "task prop" in res.lower()
 
 
-# ---------------------------------------------------------------------------
+
 # Item 11: dead social_fulfillment variable
-# ---------------------------------------------------------------------------
+
 
 
 class TestSocialFulfillmentDeadCode:
@@ -747,9 +741,9 @@ class TestSocialFulfillmentDeadCode:
         assert a.social_fulfillment == 50.0
 
 
-# ---------------------------------------------------------------------------
+
 # Item 12: diagonal walk precision
-# ---------------------------------------------------------------------------
+
 
 
 class TestDiagonalWalkPrecision:
@@ -815,9 +809,9 @@ class TestDiagonalWalkPrecision:
         assert a.y == pytest.approx(130.0)
 
 
-# ---------------------------------------------------------------------------
+
 # Item 13: KeyError on malformed currently_holding
-# ---------------------------------------------------------------------------
+
 
 
 class TestHeldItemKeyError:
@@ -876,9 +870,9 @@ class TestHeldItemKeyError:
         assert "Held Item: None" in user_msg
 
 
-# ---------------------------------------------------------------------------
+
 # Integration: multi-hour simulation exercising all fixes
-# ---------------------------------------------------------------------------
+
 
 
 class TestMultiHourSimulation:

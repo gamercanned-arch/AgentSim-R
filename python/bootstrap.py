@@ -1,9 +1,6 @@
 from __future__ import annotations
-
 import random
-
 import numpy as np
-
 from python.config import BASE_STORE_INVENTORY, N_AGENTS, RANDOM_SEED
 from python.locations import get_location_by_name, get_location_outside_entrance_point
 from python.state import AgentState, WorldState

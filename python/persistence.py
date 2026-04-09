@@ -1,11 +1,8 @@
-# python/persistence.py
 from __future__ import annotations
-
 import json
 import os
 from dataclasses import asdict, fields, is_dataclass
 from typing import Any, Dict
-
 from python.state import AgentState, WorldState
 
 SAVE_VERSION = 1

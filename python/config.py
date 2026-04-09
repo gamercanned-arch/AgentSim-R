@@ -1,9 +1,9 @@
 import os
 
 N_AGENTS = 6
-# With your stated server support, set to 262144.
+# With stated server support, set to 262144.
 CONTEXT_SIZE = 262144
-# Keep generation bounded; tool calls should be short.
+# Keeps generation bounded; tool calls should be short.
 MAX_NEW_TOKENS = 2048
 PASSIVE_TICK_SECONDS = 3600.0
 RANDOM_SEED = 42
@@ -15,9 +15,7 @@ TOOLS_PATH = os.path.join(BASE_DIR, "tools.json")
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-# -------------------------
 # Market model
-# -------------------------
 STOCK_MU = 0.002
 STOCK_SIGMA = 0.05
 MARKET_TICK_SECONDS = 300.0 

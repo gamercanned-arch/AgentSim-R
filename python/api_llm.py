@@ -1,4 +1,3 @@
-# python/api_llm.py
 from __future__ import annotations
 
 import json
@@ -307,8 +306,8 @@ class LLMRouter:
         is_gemma = "gemma" in model.lower()
 
         if is_gemma and system_msg:
-            # Gemma models reject native system instructions via some endpoints.
-            # Merge system into the first user message.
+            # Gemma models reject native system instructionss.
+            # Hence, meerge system into the first user message.
             if chat_msgs and chat_msgs[0]["role"] == "user":
                 chat_msgs[0]["content"] = f"{system_msg}\n\n{chat_msgs[0]['content']}"
             else:
@@ -337,7 +336,7 @@ class LLMRouter:
             max_output_tokens=max_tokens,
         )
 
-        # INFINITE RETRY LOOP for API Errors (Rate Limit, 500s)
+        # INFINITE RETRY LOOP for API Errors (Rate Limit, 500s(503, etc.))
         while True:
             for k in self.gemini_keys.iter_once_rotating():
                 try:
