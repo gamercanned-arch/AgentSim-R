@@ -13,8 +13,10 @@ from python.tooling.helpers import (
     is_busy,
     normalize_label,
 )
+
 DROP_REPICKUP_COOLDOWN = 3600.0
 MAX_SOCIAL_MESSAGE_LEN = 240
+
 def _clean_social_message(message: str, max_len: int = MAX_SOCIAL_MESSAGE_LEN) -> str:
     s = "" if message is None else str(message)
     s = s.replace("\x00", "")
@@ -25,24 +27,25 @@ def _clean_social_message(message: str, max_len: int = MAX_SOCIAL_MESSAGE_LEN) -
     if orig_len > max_len:
         s = s[: max_len - 20] + f"... ({orig_len} chars)"
     return s
+
 def _social_bump(a, b=None, amount: float = 0.2) -> None:
     a.relationships = min(25.0, a.relationships + amount)
     if b is not None:
         b.relationships = min(25.0, b.relationships + amount * 0.75)
+
 def _social_penalty(a, b=None, amount: float = 0.8) -> None:
     a.relationships = max(0.0, a.relationships - amount * 0.2)
     if b is not None:
         b.relationships = max(0.0, b.relationships - amount)
-def _enqueue_missed_interaction(target, text_busy: str, text_sleeping: str) -> None:
-    if getattr(target, "is_sleeping", False):
-        target.pending_notifications.append(text_sleeping)
-    else:
-        target.pending_notifications.append(text_busy)
+
+def _enqueue_missed_interaction(target, text_sleeping: str) -> None:
+    target.pending_notifications.append(text_sleeping)
+
 def _leave_voicemail(
     target, from_agent, message: str, sim_time: float, max_keep: int = 30
 ) -> None:
     if not hasattr(target, "voicemail_inbox") or target.voicemail_inbox is None:
-        target.voicemail_inbox =[]
+        target.voicemail_inbox = []
     target.voicemail_inbox.append(
         {
             "id": str(uuid.uuid4()),
@@ -53,52 +56,39 @@ def _leave_voicemail(
     )
     if len(target.voicemail_inbox) > max_keep:
         target.voicemail_inbox = target.voicemail_inbox[-max_keep:]
-def _cancel_task_if_any(agent, current_time: float) -> None:
-    if getattr(agent, "task_state", "idle") == "idle":
-        return
-    spent = agent.pending_task_data.get("energy_spent", 0.0)
-    start = agent.pending_task_data.get("start_time", current_time)
-    elapsed_hours = max(0.0, (current_time - start) / 3600.0)
-    energy_used = elapsed_hours * 10.0
-    refund = max(0.0, spent - energy_used)
-    agent.energy = min(100.0, agent.energy + refund)
-    if (
-        getattr(agent, "currently_holding", None)
-        and agent.currently_holding.get("id") == "job_prop"
-    ):
-        agent.currently_holding = None
-    agent.task_state = "idle"
-    agent.pending_task_data = {}
-    agent.active_task_entities = {}
-    if not getattr(agent, "is_sleeping", False):
-        agent.current_activity = "idle"
+
 def handle_talk_to(agent, world, args: dict):
     t_name = str(args.get("person", "")).strip()
     msg = _clean_social_message(args.get("message", ""))
     target = find_agent_by_name(world, t_name)
+    
     if not target or not target.alive:
         agent.failed_calls += 1
         return "Target not found.", False, 60
+        
+    if getattr(target, "current_activity", "") == "moving":
+        agent.failed_calls += 1
+        return "Target is currently in transit. Call them or wait until they arrive.", False, 60
+        
     ok, reason = can_physically_reach_person(agent, target, 50.0)
     if not ok:
         agent.failed_calls += 1
         return "Cannot reach target." if reason == "Too far." else reason, False, 60
+    
     if is_busy(target, world.sim_time):
         _enqueue_missed_interaction(
             target,
-            text_busy=(
-                f'Missed in-person talk: {agent.name} tried to talk to you ("{msg}"), '
-                "but you were busy. Maybe try contacting them?"
-            ),
-            text_sleeping=(
-                f'Missed in-person talk: {agent.name} tried to talk to you ("{msg}"), '
-                "but you were sleeping."
-            ),
+            text_sleeping=f'Missed in-person talk: {agent.name} tried to talk to you ("{msg}"), but you were sleeping.'
         )
         agent.failed_calls += 1
-        return f"{target.name} is currently busy or sleeping (DND).", False, 60
+        return f"{target.name} is currently sleeping (DND).", False, 60
+        
     _social_bump(agent, target, 0.2)
     target.pending_notifications.append(f"{agent.name} said: {msg}")
+    
+    from python.scheduler import _apply_interruption_rollback
+    _apply_interruption_rollback(target, world)
+    
     for other in world.agents.values():
         if not other.alive or other.id in (agent.id, target.id):
             continue
@@ -110,6 +100,7 @@ def handle_talk_to(agent, world, args: dict):
                 f"Overheard {agent.name} say to {target.name}: '{msg}'"
             )
     return f"Talked to {target.name}.", True, 60
+
 def handle_call_person(agent, world, args: dict):
     t_name = str(args.get("person", "")).strip()
     msg = _clean_social_message(args.get("message", ""))
@@ -117,24 +108,37 @@ def handle_call_person(agent, world, args: dict):
     if not target or not target.alive:
         agent.failed_calls += 1
         return "Target not found.", False, 60
+        
     if is_busy(target, world.sim_time):
         _leave_voicemail(target, agent, msg, world.sim_time)
         _social_bump(agent, target, 0.1)
         return f"Call to {target.name} went to voicemail. Voicemail left.", True, 60
+        
     _social_bump(agent, target, 0.1)
     target.pending_notifications.append(f"Phone Call from {agent.name}: {msg}")
+    
+    from python.scheduler import _apply_interruption_rollback
+    _apply_interruption_rollback(target, world)
     return f"Called {target.name}.", True, 60
+
 def handle_give_item(agent, world, args: dict):
     t_name = str(args.get("person", "")).strip()
     item_name = canonicalize_item_name(str(args.get("item", "")).strip())
     target = find_agent_by_name(world, t_name)
+    
     if not target or not target.alive:
         agent.failed_calls += 1
         return "Target not found.", False, 60
+        
+    if getattr(target, "current_activity", "") == "moving":
+        agent.failed_calls += 1
+        return "Target is currently in transit. Call them or wait until they arrive.", False, 60
+        
     ok, reason = can_physically_reach_person(agent, target, 20.0)
     if not ok:
         agent.failed_calls += 1
         return reason, False, 60
+        
     item_data = None
     source = None
     if agent.currently_holding and normalize_label(
@@ -155,12 +159,14 @@ def handle_give_item(agent, world, args: dict):
         if idx != -1:
             item_data = agent.inventory.pop(idx)
             source = "inventory"
+            
     if not item_data:
         agent.failed_calls += 1
         return f"You don't have {item_name} in your hand or inventory.", False, 60
+        
     if is_busy(target, world.sim_time):
         if not hasattr(world, "pending_deliveries") or world.pending_deliveries is None:
-            world.pending_deliveries =[]
+            world.pending_deliveries = []
         world.pending_deliveries.append(
             {
                 "id": str(uuid.uuid4()),
@@ -176,19 +182,11 @@ def handle_give_item(agent, world, args: dict):
         )
         _enqueue_missed_interaction(
             target,
-            text_busy=(
-                f"{agent.name} tried to give you {item_data.get('item','Unknown')}, but you were busy. "
-                "Delivery has been queued and will arrive when you are available."
-            ),
-            text_sleeping=(
-                f"{agent.name} tried to give you {item_data.get('item','Unknown')}, but you were sleeping. "
-                "Delivery has been queued and will arrive when you are available."
-            ),
+            text_sleeping=f"{agent.name} tried to give you {item_data.get('item','Unknown')}, but you were sleeping. Delivery has been queued and will arrive when you wake up."
         )
-        agent.pending_notifications.append(
-            f"Queued item delivery: {item_data.get('item','Unknown')} -> {target.name}."
-        )
-        return f"{target.name} is busy/sleeping. Item delivery queued.", True, 60
+        agent.pending_notifications.append(f"Queued item delivery: {item_data.get('item','Unknown')} -> {target.name} (they are sleeping).")
+        return f"{target.name} is sleeping. Item delivery queued.", True, 60
+        
     if len(target.inventory) >= MAX_INVENTORY:
         if source == "hand":
             agent.currently_holding = item_data
@@ -208,16 +206,20 @@ def handle_give_item(agent, world, args: dict):
                         "y": float(agent.y),
                         "z": 0.0, 
                         "dropper_id": agent.id,
-                        # FIX: Apply correct cooldown
                         "repickup_block_until": float(world.sim_time + DROP_REPICKUP_COOLDOWN),
                     }
                 )
         agent.failed_calls += 1
         return f"{target.name}'s inventory is full.", False, 60
+        
     target.inventory.append(item_data)
     _social_bump(agent, target, 0.25)
     target.pending_notifications.append(f"{agent.name} gave you {item_data.get('item','Unknown')}.")
+    
+    from python.scheduler import _apply_interruption_rollback
+    _apply_interruption_rollback(target, world)
     return f"Gave {item_data.get('item','Unknown')} to {target.name}.", True, 60
+
 def handle_give_money(agent, world, args: dict):
     t_name = str(args.get("person", "")).strip()
     try:
@@ -227,6 +229,7 @@ def handle_give_money(agent, world, args: dict):
     if math.isnan(amount) or math.isinf(amount) or amount <= 0:
         agent.failed_calls += 1
         return "Invalid amount.", False, 60
+        
     target = find_agent_by_name(world, t_name)
     if not target or not target.alive:
         agent.failed_calls += 1
@@ -234,6 +237,7 @@ def handle_give_money(agent, world, args: dict):
             f"Bank transfer failed: recipient '{t_name}' not found or not alive."
         )
         return "Recipient not found.", False, 60
+        
     if agent.money < amount:
         agent.failed_calls += 1
         agent.pending_notifications.append(
@@ -247,11 +251,16 @@ def handle_give_money(agent, world, args: dict):
     agent.money -= amount
     target.money += amount
     _social_bump(agent, target, 0.2)
+    
     if getattr(target, "is_sleeping", False):
         target.pending_notifications.append(f"While you were sleeping, {agent.name} transferred you ${amount:.2f}.")
     else:
         target.pending_notifications.append(f"{agent.name} transferred you ${amount:.2f}.")
+        from python.scheduler import _apply_interruption_rollback
+        _apply_interruption_rollback(target, world)
+        
     return f"Transferred ${amount:.2f} to {target.name}.", True, 60
+
 def handle_change_status(agent, world, args: dict):
     value = str(args.get("value", "")).strip()
     person = str(args.get("person", "")).strip()
@@ -259,11 +268,17 @@ def handle_change_status(agent, world, args: dict):
     if value:
         agent.beliefs = value
         return f'Belief/Goal updated to: "{value}".', True, 30
+        
     if person and rel_type:
         target = find_agent_by_name(world, person)
         if not target or not target.alive:
             agent.failed_calls += 1
             return f"Person '{person}' not found.", False, 60
+            
+        if getattr(target, "current_activity", "") == "moving":
+            agent.failed_calls += 1
+            return "Target is currently in transit. Call them or wait until they arrive.", False, 60
+            
         ok, _reason = can_physically_reach_person(agent, target, STATUS_MAX_DISTANCE)
         if not ok:
             agent.failed_calls += 1
@@ -272,51 +287,64 @@ def handle_change_status(agent, world, args: dict):
                 False,
                 60,
             )
+            
         if is_busy(target, world.sim_time):
             agent.failed_calls += 1
-            return f"{target.name} is currently busy or sleeping (DND).", False, 60
-        req_key = normalize_label(person)
+            return f"{target.name} is currently sleeping (DND).", False, 60
+            
+        if not hasattr(target, "_status_cooldowns"):
+            target._status_cooldowns = {}
+        if agent.name in target._status_cooldowns:
+            if world.sim_time < target._status_cooldowns[agent.name]:
+                agent.failed_calls += 1
+                return f"You must wait before requesting another status change with {target.name}.", False, 60
+                
+        if len(target.pending_status_requests) >= 3:
+            agent.failed_calls += 1
+            return f"{target.name} has too many pending requests.", False, 60
+            
         if target.pending_status_requests.get(normalize_label(agent.name)) == rel_type:
             agent.failed_calls += 1
             return f"You already requested status '{rel_type}' with {target.name}. Awaiting their response.", False, 30
             
+        target._status_cooldowns[agent.name] = world.sim_time + 12 * 3600
         target.pending_status_requests[normalize_label(agent.name)] = rel_type
         target.pending_notifications.append(
             f"{agent.name} requested relationship status: {rel_type}."
         )
+        
+        from python.scheduler import _apply_interruption_rollback
+        _apply_interruption_rollback(target, world)
         return f"Requested status change to '{rel_type}' with {target.name}.", True, 30
+        
     agent.failed_calls += 1
     return "Invalid parameters.", False, 60
+
 def handle_attack_person(agent, world, args: dict):
     t_name = str(args.get("person", "")).strip()
     target = find_agent_by_name(world, t_name)
     if not target or not target.alive:
         agent.failed_calls += 1
         return "Target not found.", False, 60
+        
+    if getattr(target, "current_activity", "") == "moving":
+        agent.failed_calls += 1
+        return "Target is currently in transit. Wait until they arrive.", False, 60
+        
     ok, reason = can_physically_reach_person(agent, target, 20.0)
     if not ok:
         agent.failed_calls += 1
         return reason, False, 60
     
-    if getattr(target, "task_state", "idle") != "idle":
-        _cancel_task_if_any(target, world.sim_time)
-        target.busy_until = min(float(target.busy_until), float(world.sim_time))
-        target.pending_notifications.append(
-            "URGENT: Your task was interrupted by an attack!"
-        )
-    elif getattr(target, "is_sleeping", False):
+    if getattr(target, "is_sleeping", False):
         target.is_sleeping = False
         target.current_activity = "idle"
         target.busy_until = min(float(target.busy_until), float(world.sim_time))
         target.pending_notifications.append("URGENT: You were attacked while sleeping!")
     else:
-        if float(target.busy_until) > float(world.sim_time):
-            agent.failed_calls += 1
-            return (
-                f"{target.name} is currently busy. Cannot attack right now.",
-                False,
-                60,
-            )
+        from python.scheduler import _apply_interruption_rollback
+        _apply_interruption_rollback(target, world)
+
     damage = random.uniform(5.0, 25.0)
     target.health -= damage
     target.stress = min(100.0, target.stress + 15.0)

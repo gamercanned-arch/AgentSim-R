@@ -13,6 +13,7 @@ def liquidate_portfolio(agent, world) -> float:
         return 0.0
     proceeds = agent.shares_owned * world.market_price
     agent.money += proceeds
+    world.net_volume_this_period -= agent.shares_owned
     agent.shares_owned = 0
     agent.last_known_price = 0.0
     return float(proceeds)
@@ -57,7 +58,6 @@ def kill_agent(target, world, cause: str = "unknown") -> None:
         "vehicle_type": getattr(target, "vehicle_type", ""),
     }
 
-    # Clamp estate z to ground-plane so loot is reachable under "floor 1 only".
     estate = {
         "id": str(uuid.uuid4()),
         "source_agent_id": target.id,
