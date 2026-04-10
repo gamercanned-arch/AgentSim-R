@@ -17,16 +17,19 @@ from python.tooling.helpers import (
     record_expense,
     validate_shares,
 )
+
 def _find_catalog_entry(item_name: str):
     for category, items in ITEM_CATALOG.items():
         if item_name in items:
             return category, items[item_name]
     return None, None
+
 def _current_store_if_inside(agent):
     here = get_current_location_def(agent.x, agent.y, agent.z)
     if here and here.name in {"Store_A", "Store_B"}:
         return here
     return None
+
 def handle_buy_item(agent, world, args: dict):
     item = canonicalize_item_name(str(args.get("item", "")).strip()[:100])
     if item in VEHICLE_CATALOG:
@@ -133,6 +136,7 @@ def handle_buy_item(agent, world, args: dict):
     world.store_inventory[item] -= 1
     agent.inventory.append({"id": str(uuid.uuid4()), "item": item, "durability": 5, "bought": world.sim_time})
     return f"Bought {item} for ${price:.2f}.", True, 120
+
 def handle_eat_food(agent, world, args: dict):
     item = canonicalize_food_name(str(args.get("item", "")).strip()[:100])
     food_data = None
@@ -153,6 +157,7 @@ def handle_eat_food(agent, world, args: dict):
                 agent.failed_calls += 1
                 return f"{item} is not edible food.", False, 60
             food_data = agent.inventory.pop(idx)
+            
     if food_data:
         if world.sim_time - food_data.get("bought", world.sim_time) > 172800:
             agent.health = max(0.0, agent.health - 10.0)
@@ -174,6 +179,7 @@ def handle_eat_food(agent, world, args: dict):
         agent.money -= cost
         record_expense(agent, cost)
         world.store_inventory[item] -= 1
+        
     f = ITEM_CATALOG["food"][item]
     agent.hunger = max(0.0, agent.hunger - float(f["hunger"]))
     agent.hydration = min(100.0, max(0.0, agent.hydration + float(f.get("hydration", 0))))
@@ -184,13 +190,14 @@ def handle_eat_food(agent, world, args: dict):
         True,
         int(f.get("time", 60)),
     )
+
 def handle_seek_medicalcare(agent, world, args: dict):
     hospital = get_location_by_name("Hospital")
     if not hospital:
         agent.failed_calls += 1
         return "Hospital location not found.", False, 60
     here = get_current_location_def(agent.x, agent.y, agent.z)
-    if not here or here.name != "Hospital":
+    if not here or here.name != "Hospital" or "Outside" in agent.location:
         agent.failed_calls += 1
         return "You must be inside Hospital to seek medical care. Move to Hospital and walk inside.", False, 60
     if not check_open_hours(hospital, world.sim_time):
@@ -204,6 +211,7 @@ def handle_seek_medicalcare(agent, world, args: dict):
     record_expense(agent, cost)
     agent.health = min(100.0, agent.health + 30.0)
     return "Received medical care. Health +30.", True, 600
+
 def handle_buy_stock(agent, world, args: dict):
     shares, err = validate_shares(args.get("shares", 0))
     if err:
@@ -222,6 +230,7 @@ def handle_buy_stock(agent, world, args: dict):
     agent.last_known_price = (old_cost_basis + cost) / agent.shares_owned
     world.net_volume_this_period += shares
     return f"Bought {shares} share(s).", True, 60
+
 def handle_sell_stock(agent, world, args: dict):
     shares, err = validate_shares(args.get("shares", 0))
     if err:

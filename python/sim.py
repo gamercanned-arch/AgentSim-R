@@ -13,7 +13,6 @@ from python.scheduler import run_tick
 
 SAVE_PATH = "saves/world.json"
 
-# Safe casting with fallback for empty strings
 AUTOSAVE_TICKS = int(os.environ.get("AUTOSAVE_TICKS", "").strip() or "10")
 
 
@@ -39,7 +38,6 @@ def _wipe_cache_and_logs() -> None:
 
 
 def main():
-    # Force override=True so .env variables overwrite system variables
     load_dotenv(override=True)
 
     if save_exists(SAVE_PATH):
@@ -72,12 +70,24 @@ def main():
 
     tick = 0
     start_wall_time = time.time()
+    end_warning_sent = False
 
     try:
         while True:
             elapsed_minutes = (time.time() - start_wall_time) / 60.0
             if elapsed_minutes >= MAX_RUNTIME_MINUTES:
                 break
+                
+            if tick > 10 and not end_warning_sent:
+                if elapsed_minutes > 0:
+                    tpm = tick / elapsed_minutes
+                    rem_min = MAX_RUNTIME_MINUTES - elapsed_minutes
+                    est_rem_ticks = rem_min * tpm
+                    if est_rem_ticks <= 300:
+                        for a in world.agents.values():
+                            if a.alive:
+                                a.pending_notifications.append("This was a simulation all along, the simulation is now ending in a short amount of time. You may do whatever last tasks you wish to do in this world before it ends.")
+                        end_warning_sent = True
 
             run_tick(world)
             tick += 1

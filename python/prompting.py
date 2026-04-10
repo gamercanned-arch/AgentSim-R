@@ -206,18 +206,15 @@ def _visible_objects_here(agent) -> str:
     loc_def = get_current_location_def(agent.x, agent.y, agent.z)
     if not loc_def:
         return "None"
+        
+    if "Outside" in agent.location and loc_def.has_roof:
+        return "None"
 
     names = []
     for obj in loc_def.interactables:
-        # Hide any floor-change interactables entirely (ground floor only).
         if "target_z" in obj:
             continue
 
-        # FIX 8: Ground-floor-only — show objects on the ground floor (z=0).
-        # Previously relied on OBJECT_Z_TOLERANCE=1.0 to mask a coordinate
-        # mismatch between agent Z and interactable Z. Now that all home
-        # interactables are registered at z=0 and agents are clamped to z=0,
-        # we use the same tolerance as a safety net but the values should match.
         if abs(float(obj.get("z", 0.0)) - agent.z) <= 1.0:
             names.append(obj["name"])
 
@@ -447,11 +444,6 @@ def _nearby_estates(agent, world, max_show: int = 6) -> str:
 
 
 def _history_for_model(agent) -> list[dict]:
-    """
-    Provider tool roles are deprecated. Internally we still store tool results as role=tool,
-    but for prompting we render them as normal user transcript lines starting with:
-      RESULT (tool_name): ...
-    """
     out: list[dict] = []
     for m in list(agent.chat_history or []):
         role = m.get("role", "")
@@ -473,8 +465,7 @@ def build_messages(agent_id: int, world, notifications: str) -> List[dict]:
 
     held = "None"
     if agent.currently_holding:
-        # robust against malformed holding dict (missing 'item')
-        held = agent.currently_holding.get("item", "None") or "None"
+        held = agent.currently_holding.get("item", "Unknown") if isinstance(agent.currently_holding, dict) else "None"
 
     loc_label = _display_location(agent, world)
     loc_def = get_current_location_def(agent.x, agent.y, agent.z)
@@ -625,7 +616,6 @@ def call_server(
             raw = res_data.get("content", "") or ""
             out = _normalize_assistant_output(raw)
 
-            # Attach raw for scheduler/logger (full raw response, then processing occurs)
             if not hasattr(call_server, "last_raw"):
                 call_server.last_raw = {}  # type: ignore[attr-defined]
             call_server.last_raw[int(agent_id)] = {  # type: ignore[attr-defined]
@@ -644,7 +634,6 @@ def call_server(
             manage_slot(agent_id, action="save")
             return out, prompt_tokens, gen_tokens
     except Exception as e:
-        # Also attach the raw error string for consistent logging
         if not hasattr(call_server, "last_raw"):
             call_server.last_raw = {}  # type: ignore[attr-defined]
         call_server.last_raw[int(agent_id)] = {  # type: ignore[attr-defined]

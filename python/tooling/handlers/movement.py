@@ -29,7 +29,6 @@ _COORD_RE = re.compile(
     r"^\s*\(?\s*-?\d+(?:\.\d+)?\s*(?:,\s*|\s+)-?\d+(?:\.\d+)?(?:\s*(?:,\s*|\s+)-?\d+(?:\.\d+)?)?\s*\)?\s*$"
 )
 
-
 def _bearing_to_text(dx: float, dy: float) -> str:
     if abs(dx) < 1e-6 and abs(dy) < 1e-6:
         return "here"
@@ -47,10 +46,8 @@ def _bearing_to_text(dx: float, dy: float) -> str:
     best = min(dirs, key=lambda d: abs(((ang - d[1] + 180) % 360) - 180))
     return best[0]
 
-
 def _looks_like_coordinates(text: str) -> bool:
     return bool(_COORD_RE.match(str(text or "").strip()))
-
 
 def _resolve_home_alias(place: str, world) -> Tuple[Optional[str], Optional[object]]:
     norm = normalize_label(place)
@@ -63,7 +60,6 @@ def _resolve_home_alias(place: str, world) -> Tuple[Optional[str], Optional[obje
         if owner:
             return owner.home_location, owner
     return None, None
-
 
 def _resolve_destination(place: str, raw_place: str, agent, world):
     raw_norm = normalize_label(raw_place)
@@ -104,13 +100,11 @@ def _resolve_destination(place: str, raw_place: str, agent, world):
         f"Unknown place: '{raw_place}'. Use a named place like Library or Home_Taylor.",
     )
 
-
 def _distance_to_vehicle(agent) -> float:
     vx = getattr(agent, "vehicle_x", agent.x)
     vy = getattr(agent, "vehicle_y", agent.y)
     vz = getattr(agent, "vehicle_z", agent.z)
     return get_distance_3d((agent.x, agent.y, agent.z), (vx, vy, vz))
-
 
 def handle_move_to(agent, world, args: dict):
     raw_place = str(args.get("place", ""))[:100].strip()
@@ -183,6 +177,7 @@ def handle_move_to(agent, world, args: dict):
             60,
         )
 
+    old_xyz = (float(agent.x), float(agent.y), float(agent.z))
     agent.energy -= energy_drain
     if fuel_cost > 0:
         agent.money -= fuel_cost
@@ -197,6 +192,15 @@ def handle_move_to(agent, world, args: dict):
         f"Outside {target_loc.name}" if target_loc.has_roof else target_loc.name
     )
     agent.current_activity = "moving"
+
+    agent._transit_meta = {
+        "start_xyz": old_xyz,
+        "end_xyz": outside_xyz,
+        "start_time": float(world.sim_time),
+        "total_time": float(time_cost),
+        "energy_cost": float(energy_drain),
+        "fuel_cost": float(fuel_cost)
+    }
 
     if mode == "vehicle":
         agent.vehicle_x, agent.vehicle_y, agent.vehicle_z = agent.x, agent.y, agent.z
@@ -242,7 +246,6 @@ def handle_move_to(agent, world, args: dict):
         time_cost,
     )
 
-
 def _entering_locked_home(agent, new_loc_name: str, world) -> Optional[str]:
     if not is_home_location(new_loc_name):
         return None
@@ -263,7 +266,6 @@ def _entering_locked_home(agent, new_loc_name: str, world) -> Optional[str]:
         return f"{owner.name}'s home is private and locked."
     return "This home is private and locked."
 
-
 def handle_walk(agent, world, args: dict):
     direction = str(args.get("direction", "")).strip().lower()
     _diag = 30.0 / math.sqrt(2)
@@ -282,8 +284,26 @@ def handle_walk(agent, world, args: dict):
         agent.failed_calls += 1
         return "Invalid direction.", False, 60
 
-    new_x = max(0.0, min(5000.0, agent.x + delta[0]))
-    new_y = max(0.0, min(5000.0, agent.y + delta[1]))
+    new_x = agent.x + delta[0]
+    new_y = agent.y + delta[1]
+
+    bounced = False
+    if new_x < 0.0: 
+        new_x = abs(new_x)
+        bounced = True
+    elif new_x > 5000.0: 
+        new_x = 5000.0 - (new_x - 5000.0)
+        bounced = True
+        
+    if new_y < 0.0: 
+        new_y = abs(new_y)
+        bounced = True
+    elif new_y > 5000.0: 
+        new_y = 5000.0 - (new_y - 5000.0)
+        bounced = True
+
+    new_x = round(new_x, 2)
+    new_y = round(new_y, 2)
 
     current_loc = get_current_location_def(agent.x, agent.y, agent.z)
     new_loc = get_current_location_def(new_x, new_y, agent.z)
@@ -297,8 +317,6 @@ def handle_walk(agent, world, args: dict):
             60,
         )
 
-    # Enforce open hours ONLY when transitioning into a location.
-    # Always allow moving within a location (even after close) and allow exiting to Outside.
     if new_loc and (not current_loc or current_loc.name != new_loc.name):
         if not check_open_hours(new_loc, world.sim_time):
             agent.failed_calls += 1
@@ -315,6 +333,8 @@ def handle_walk(agent, world, args: dict):
     agent.location = new_loc.name if new_loc else "Outside"
     agent.current_activity = "moving"
 
+    bounce_msg = " You bounced off the simulation boundary." if bounced else ""
+
     if current_loc and new_loc and current_loc.name != new_loc.name:
-        return f"Walked {direction}. You entered {new_loc.name}.", True, 60
-    return f"Walked {direction}. Location updated to: {agent.location}.", True, 60
+        return f"Walked {direction}. You entered {new_loc.name}.{bounce_msg}", True, 60
+    return f"Walked {direction}. Location updated to: {agent.location}.{bounce_msg}", True, 60

@@ -106,7 +106,6 @@ def _summarize_old_turns(agent, summarizer: Summarizer, turns_to_summarize: int)
     chunk_text = _extract_turn_text(agent, agent.chat_history, turns_to_summarize)
     
     try:
-        # Cohesive Weaving Summarization
         existing = getattr(agent, "summary_text", "") or ""
         new_summary = summarizer.summarize(existing, chunk_text)
         agent.summary_text = new_summary
@@ -114,7 +113,6 @@ def _summarize_old_turns(agent, summarizer: Summarizer, turns_to_summarize: int)
         agent.summary_turns_summarized += turns_to_summarize
         agent.chat_history = _drop_first_n_turns(agent.chat_history, turn_count=turns_to_summarize)
         
-        # Hierarchical Compression: If the running summary gets too big (> 40k chars)
         if len(agent.summary_text) > 40000:
             macro_prompt = f"Compress this extremely long running summary into a dense, factual macro-summary without losing key relationship or financial data:\n{agent.summary_text}"
             agent.summary_text = summarizer.summarize("", macro_prompt)
@@ -304,11 +302,24 @@ def main():
     print(f"\nAgentSim-R API runner starting...\nTime limit: {MAX_RUNTIME_MINUTES}m")
     tick = 0
     start_wall = time.time()
+    end_warning_sent = False
 
     try:
         while True:
-            if (time.time() - start_wall) / 60.0 >= MAX_RUNTIME_MINUTES:
+            elapsed_minutes = (time.time() - start_wall) / 60.0
+            if elapsed_minutes >= MAX_RUNTIME_MINUTES:
                 break
+                
+            if tick > 10 and not end_warning_sent:
+                if elapsed_minutes > 0:
+                    tpm = tick / elapsed_minutes
+                    rem_min = MAX_RUNTIME_MINUTES - elapsed_minutes
+                    est_rem_ticks = rem_min * tpm
+                    if est_rem_ticks <= 300:
+                        for a in world.agents.values():
+                            if a.alive:
+                                a.pending_notifications.append("This was a simulation all along, the simulation is now ending in a short amount of time. You may do whatever last tasks you wish to do in this world before it ends.")
+                        end_warning_sent = True
 
             scheduler.run_tick(world)
             tick += 1
