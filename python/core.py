@@ -11,6 +11,7 @@ from python.config import (
 )
 
 WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
 SIM_START_DATE = date(2026, 3, 30)
 
 
@@ -52,8 +53,8 @@ def get_clock(sim_time: float) -> str:
 def get_time_string(sim_time: float, include_weekday: bool = True) -> str:
     p = get_time_parts(sim_time)
     if include_weekday:
-        return f"{WEEKDAY_NAMES[p.weekday_idx]}, {p.day:02d}-{p.month:02d}-{p.year:04d} {p.hour:02d}:{p.minute:02d}"
-    return f"{p.day:02d}-{p.month:02d}-{p.year:04d} {p.hour:02d}:{p.minute:02d}"
+        return f"{WEEKDAY_NAMES[p.weekday_idx]}, {p.day:02d} {MONTH_NAMES[p.month-1]} {p.year:04d} {p.hour:02d}:{p.minute:02d}"
+    return f"{p.day:02d} {MONTH_NAMES[p.month-1]} {p.year:04d} {p.hour:02d}:{p.minute:02d}"
 
 
 def is_market_open(sim_time: float) -> bool:

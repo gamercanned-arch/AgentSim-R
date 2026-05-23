@@ -1,6 +1,7 @@
 import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+# Fragility warning: This module-level import binds locations data at import time.
 from python.locations import get_home_lots_inventory
 @dataclass
 class AgentState:
@@ -57,12 +58,15 @@ class AgentState:
     vehicle_y: float = 0.0
     vehicle_z: float = 0.0
     voicemail_inbox: List[Dict[str, Any]] = field(default_factory=list)
-    first_turn: bool = True
     system_prompt: str = ""
     chat_history: List[Dict[str, str]] = field(default_factory=list)
     last_action_result: str = "None (First turn)"
     last_parse_error: bool = False
 class WorldState:
+    """
+    WorldState is not a dataclass because it requires custom initialization logic
+    for nested collections and external dependencies like home lots.
+    """
     def __init__(self):
         self.agents: Dict[int, AgentState] = {}
         self.sim_time: float = 0.0
@@ -75,15 +79,16 @@ class WorldState:
         self.store_inventory: Dict[str, int] = {}
         self.last_restock_time: float = 0.0
         self.last_market_tick: float = 0.0
+        self.last_tax_day: int = 0
         self.vacant_home_lots: Dict[str, List[str]] = get_home_lots_inventory()
         self.ground_items: List[Dict[str, Any]] = []
         self.corpse_estates: List[Dict[str, Any]] = []
         self.pending_deliveries: List[Dict[str, Any]] =[]
-    def allocate_home_lot(self, home_type: str, prefer_floor1: bool = False) -> Optional[str]:
+    def allocate_home_lot(self, home_type: str, require_floor1: bool = False) -> Optional[str]:
         available = self.vacant_home_lots.get(home_type,[])
         if not available:
             return None
-        if prefer_floor1:
+        if require_floor1:
             floor1_candidates =[
                 name for name in available
                 if ("_Floor_1" in name) or ("_Floor_" not in name)

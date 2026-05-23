@@ -19,7 +19,7 @@ from python.prompting import GLOBAL_TOOLS_LIST
 import python.scheduler as scheduler
 
 
-SAVE_PATH = "saves/world.json"
+SAVE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "saves", "world.json"))
 AUTOSAVE_TICKS = int(os.environ.get("AUTOSAVE_TICKS", "").strip() or "10")
 
 API_CONTEXT_SIZE = int(os.environ.get("API_CONTEXT_SIZE", "").strip() or "1000000")
@@ -107,7 +107,7 @@ def _summarize_old_turns(agent, summarizer: Summarizer, turns_to_summarize: int)
     
     try:
         existing = getattr(agent, "summary_text", "") or ""
-        new_summary = summarizer.summarize(existing, chunk_text)
+        new_summary = summarizer.summarize(existing, chunk_text, agent_id=agent.id)
         agent.summary_text = new_summary
             
         agent.summary_turns_summarized += turns_to_summarize
@@ -115,11 +115,16 @@ def _summarize_old_turns(agent, summarizer: Summarizer, turns_to_summarize: int)
         
         if len(agent.summary_text) > 40000:
             macro_prompt = f"Compress this extremely long running summary into a dense, factual macro-summary without losing key relationship or financial data:\n{agent.summary_text}"
-            agent.summary_text = summarizer.summarize("", macro_prompt)
+            agent.summary_text = summarizer.summarize("", macro_prompt, agent_id=agent.id)
             agent.pending_notifications.append("Memory compressed: Performed macro-summarization of past events.")
             
     except Exception as e:
         agent.pending_notifications.append(f"Context summarization failed temporarily: {e}")
+
+
+def _estimate_chat_history_tokens(chat_history: list) -> int:
+    total_chars = sum(len(str(m.get("content", ""))) for m in chat_history)
+    return total_chars // CHARS_PER_TOKEN
 
 
 def _maybe_summarize_agent(agent, world, summarizer: Summarizer, base_build_messages) -> None:
@@ -129,25 +134,21 @@ def _maybe_summarize_agent(agent, world, summarizer: Summarizer, base_build_mess
 
     _ensure_summary_fields(agent)
 
-    while True:
-        msgs = base_build_messages(agent.id, world, "")
-        summary = (getattr(agent, "summary_text", "") or "").strip()
-        if summary:
-            msgs = [msgs[0], {"role": "system", "content": "Summary of prior events:\n" + summary}] + msgs[1:]
-        est_tokens = _estimate_prompt_tokens_plain(msgs)
-
+    MAX_SUMMARIZE_LOOPS = 5
+    for _loop in range(MAX_SUMMARIZE_LOOPS):
+        est_tokens = _estimate_chat_history_tokens(agent.chat_history)
         turns = _count_turns(agent.chat_history)
 
-        if turns >= 40:
-            _summarize_old_turns(agent, summarizer, 30)
-            continue
-
-        if est_tokens > API_TOKEN_TARGET and turns > 10:
-            to_sum = max(1, turns - 10)
+        if est_tokens >= 100000 and turns > 2:
+            to_sum = max(1, turns // 2)
             _summarize_old_turns(agent, summarizer, to_sum)
             continue
 
         break
+    else:
+        # Safety: force-trim history if summarization loop didn't converge
+        agent.chat_history = agent.chat_history[-10:]
+        agent.pending_notifications.append("Memory overflow: oldest history force-trimmed.")
 
 
 def _ensure_tools_prefixed_in_system(msgs: list[dict]) -> list[dict]:

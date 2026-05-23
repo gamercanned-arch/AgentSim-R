@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import threading
 from copy import deepcopy
 from datetime import datetime, timezone
 
@@ -12,8 +13,12 @@ LOG_FULL_MESSAGES = str(os.environ.get("LOG_FULL_MESSAGES", "0")).lower() in (
     "yes",
 )
 
-# Safe casting with fallback for empty strings
-LOG_MAX_CHARS = int(os.environ.get("LOG_MAX_CHARS", "").strip() or "6000")
+try:
+    LOG_MAX_CHARS = int(os.environ.get("LOG_MAX_CHARS", "").strip() or "6000")
+except ValueError:
+    LOG_MAX_CHARS = 6000
+
+_WRITE_LOCK = threading.Lock()
 
 try:
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -26,8 +31,10 @@ except OSError as e:
 
 def _write(path: str, data: dict) -> None:
     data["timestamp"] = datetime.now(timezone.utc).isoformat()
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(data, ensure_ascii=False) + "\n")
+    line = json.dumps(data, ensure_ascii=False, default=str) + "\n"
+    with _WRITE_LOCK:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line)
 
 
 def _clean_item(item):
@@ -80,7 +87,7 @@ def _summarize_messages(messages: list) -> dict:
 def _extract_system_user(messages: list) -> tuple[str, str]:
     system = ""
     last_user = ""
-    for m in messages or[]:
+    for m in messages or []:
         if m.get("role") == "system" and not system:
             system = m.get("content", "") or ""
         if m.get("role") == "user":
@@ -89,57 +96,63 @@ def _extract_system_user(messages: list) -> tuple[str, str]:
 
 
 def snapshot_agent(agent) -> dict:
+    def num(name: str, default: float = 0.0) -> float:
+        try:
+            return round(float(getattr(agent, name, default)), 2)
+        except (TypeError, ValueError):
+            return round(float(default), 2)
+
     return {
-        "id": agent.id,
-        "name": agent.name,
-        "alive": agent.alive,
-        "age": agent.age,
-        "health": round(agent.health, 2),
-        "energy": round(agent.energy, 2),
-        "hydration": round(getattr(agent, "hydration", 0.0), 2),
-        "happiness": round(agent.happiness, 2),
-        "stress": round(agent.stress, 2),
-        "hunger": round(agent.hunger, 2),
-        "education": round(agent.education, 2),
-        "relationships": round(agent.relationships, 2),
-        "relationships_status": agent.relationships_status,
-        "relationship_partner": agent.relationship_partner,
-        "beliefs": agent.beliefs,
-        "money": round(agent.money, 2),
-        "expenses": round(agent.expenses, 2),
-        "total_expenses": round(agent.total_expenses, 2),
-        "hourly_wage": round(agent.hourly_wage, 2),
-        "job": agent.job,
-        "shares_owned": agent.shares_owned,
-        "last_known_price": round(agent.last_known_price, 2),
-        "location": agent.location,
-        "x": round(agent.x, 2),
-        "y": round(agent.y, 2),
-        "z": round(agent.z, 2),
-        "current_home_type": agent.current_home_type,
-        "home_location": agent.home_location,
-        "busy_until": round(agent.busy_until, 2),
-        "is_sleeping": agent.is_sleeping,
-        "current_activity": agent.current_activity,
-        "task_state": agent.task_state,
-        "pending_task_data": deepcopy(agent.pending_task_data),
+        "id": getattr(agent, "id", None),
+        "name": getattr(agent, "name", ""),
+        "alive": bool(getattr(agent, "alive", False)),
+        "age": getattr(agent, "age", 0),
+        "health": num("health"),
+        "energy": num("energy"),
+        "hydration": num("hydration"),
+        "happiness": num("happiness"),
+        "stress": num("stress"),
+        "hunger": num("hunger"),
+        "education": num("education"),
+        "relationships": num("relationships"),
+        "relationships_status": getattr(agent, "relationships_status", ""),
+        "relationship_partner": getattr(agent, "relationship_partner", ""),
+        "beliefs": getattr(agent, "beliefs", ""),
+        "money": num("money"),
+        "expenses": num("expenses"),
+        "total_expenses": num("total_expenses"),
+        "hourly_wage": num("hourly_wage"),
+        "job": getattr(agent, "job", ""),
+        "shares_owned": getattr(agent, "shares_owned", 0),
+        "last_known_price": num("last_known_price"),
+        "location": getattr(agent, "location", ""),
+        "x": num("x"),
+        "y": num("y"),
+        "z": num("z"),
+        "current_home_type": getattr(agent, "current_home_type", ""),
+        "home_location": getattr(agent, "home_location", ""),
+        "busy_until": num("busy_until"),
+        "is_sleeping": bool(getattr(agent, "is_sleeping", False)),
+        "current_activity": getattr(agent, "current_activity", ""),
+        "task_state": getattr(agent, "task_state", "idle"),
+        "pending_task_data": deepcopy(getattr(agent, "pending_task_data", {})),
         "active_task_entities": deepcopy(getattr(agent, "active_task_entities", {})),
-        "inventory": deepcopy(agent.inventory),
-        "currently_holding": _clean_item(agent.currently_holding),
-        "pending_notifications": list(agent.pending_notifications),
-        "pending_market_orders": deepcopy(agent.pending_market_orders),
-        "failed_calls": agent.failed_calls,
-        "fail_counter": agent.fail_counter,
-        "last_parse_error": agent.last_parse_error,
-        "hours_lived": agent.hours_lived,
-        "awake_hours": agent.awake_hours,
-        "total_prompt_tokens": agent.total_prompt_tokens,
-        "last_action_result": agent.last_action_result,
+        "inventory": deepcopy(getattr(agent, "inventory", [])),
+        "currently_holding": _clean_item(getattr(agent, "currently_holding", None)),
+        "pending_notifications": list(getattr(agent, "pending_notifications", []) or []),
+        "pending_market_orders": deepcopy(getattr(agent, "pending_market_orders", [])),
+        "failed_calls": getattr(agent, "failed_calls", 0),
+        "fail_counter": getattr(agent, "fail_counter", 0),
+        "last_parse_error": bool(getattr(agent, "last_parse_error", False)),
+        "hours_lived": getattr(agent, "hours_lived", 0),
+        "awake_hours": getattr(agent, "awake_hours", 0),
+        "total_prompt_tokens": getattr(agent, "total_prompt_tokens", 0),
+        "last_action_result": getattr(agent, "last_action_result", ""),
         "vehicle_type": getattr(agent, "vehicle_type", ""),
         "vehicle_pos": (
-            round(getattr(agent, "vehicle_x", 0.0), 2),
-            round(getattr(agent, "vehicle_y", 0.0), 2),
-            round(getattr(agent, "vehicle_z", 0.0), 2),
+            num("vehicle_x"),
+            num("vehicle_y"),
+            num("vehicle_z"),
         ),
         "recent_scenarios": deepcopy(getattr(agent, "recent_scenarios", {})),
         "voicemail_inbox": deepcopy(getattr(agent, "voicemail_inbox",[])),

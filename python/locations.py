@@ -500,9 +500,6 @@ def humanize_location_name(name: str) -> str:
         return describe_home_location(name)
     return name.replace("_", " ")
 
-def get_location_label(name: str) -> str:
-    return humanize_location_name(name)
-
 def get_location_entrance_point(loc: LocationDef) -> tuple:
     if loc.entrance_x is not None and loc.entrance_y is not None and loc.entrance_z is not None:
         return (float(loc.entrance_x), float(loc.entrance_y), float(loc.entrance_z))

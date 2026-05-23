@@ -62,28 +62,7 @@ def _tools_system_prefix(tools: List[dict]) -> str:
     return "\n".join(lines)
 
 
-_THINK_CLEAN_RE = re.compile(r"(</think>\s*){2,}", re.DOTALL)
-
-
-def _normalize_assistant_output_xml(out: str) -> str:
-    out = (out or "").strip()
-    if not out:
-        return ""
-
-    out = re.sub(_THINK_CLEAN_RE, "</think>\n", out)
-
-    if "<think>" in out:
-        return out
-
-    start_idx = out.find("<tool_call>")
-    if start_idx != -1:
-        reasoning = out[:start_idx].strip()
-        rest = out[start_idx:]
-        if reasoning:
-            return f"<think>\n{reasoning}\n</think>\n\n{rest}"
-        return rest
-
-    return out
+from python.prompting import _normalize_assistant_output as _normalize_assistant_output_xml
 
 
 @dataclass
@@ -161,6 +140,11 @@ class LLMRouter:
 
         self.gemini_keys = APIKeyRing(self._load_keys("GEMINI_API_KEY"))
         self.last_raw: Dict[int, Dict[str, str]] = {}
+        self.quota: Optional['QuotaManager'] = None
+        self._clients: Dict[str, genai.Client] = {}
+
+    def set_quota(self, quota: 'QuotaManager'):
+        self.quota = quota
 
     @staticmethod
     def _load_keys(prefix: str) -> List[str]:
@@ -210,7 +194,7 @@ class LLMRouter:
 
         prompt_tokens = _approx_tokens_from_messages(msgs)
 
-        raw = self._route_call_rich(msgs, provider=None, model=None)
+        raw = self._route_call_rich(msgs, provider=None, model=None, agent_id=agent_id)
         self.last_raw[int(agent_id)] = {
             "provider": raw.provider,
             "model": raw.model,
@@ -228,6 +212,7 @@ class LLMRouter:
         model: str,
         messages: List[dict],
         *,
+        agent_id: Optional[int] = None,
         temperature: float = 0.2,
         top_p: float = 0.8,
         max_output_tokens: int = 2048,
@@ -247,10 +232,10 @@ class LLMRouter:
             max_output_tokens=int(max_output_tokens),
         )
 
-        raw = self._call_provider_model_rich(provider, model, cfg, msgs)
+        raw = self._call_provider_model_rich(provider, model, cfg, msgs, agent_id=agent_id)
         return (raw.content or "").strip()
 
-    def _route_call_rich(self, messages: List[dict], provider: Optional[str], model: Optional[str]) -> RawLLMResponse:
+    def _route_call_rich(self, messages: List[dict], provider: Optional[str], model: Optional[str], agent_id: Optional[int] = None) -> RawLLMResponse:
         if provider and model:
             cfg = self.provider_configs.get(provider)
             if not cfg:
@@ -263,7 +248,7 @@ class LLMRouter:
                 timeout_s=cfg.timeout_s,
                 max_output_tokens=cfg.max_output_tokens,
             )
-            return self._call_provider_model_rich(provider, model, cfg2, messages)
+            return self._call_provider_model_rich(provider, model, cfg2, messages, agent_id=agent_id)
 
         seq = self._provider_sequence()
         last_err = None
@@ -272,29 +257,29 @@ class LLMRouter:
             if not cfg or not cfg.models:
                 continue
             try:
-                return self._call_provider_rich(cfg, messages)
+                return self._call_provider_rich(cfg, messages, agent_id=agent_id)
             except Exception as e:
                 last_err = e
                 continue
         raise RuntimeError(f"All providers failed. Last error: {last_err}")
 
-    def _call_provider_rich(self, cfg: ProviderConfig, messages: List[dict]) -> RawLLMResponse:
+    def _call_provider_rich(self, cfg: ProviderConfig, messages: List[dict], agent_id: Optional[int] = None) -> RawLLMResponse:
         last_err = None
         for model in cfg.models:
             try:
-                return self._call_provider_model_rich(cfg.name, model, cfg, messages)
+                return self._call_provider_model_rich(cfg.name, model, cfg, messages, agent_id=agent_id)
             except Exception as e:
                 last_err = e
                 continue
         raise RuntimeError(f"Provider {cfg.name} failed for all models. Last error: {last_err}")
 
-    def _call_provider_model_rich(self, provider: str, model: str, cfg: ProviderConfig, messages: List[dict]) -> RawLLMResponse:
+    def _call_provider_model_rich(self, provider: str, model: str, cfg: ProviderConfig, messages: List[dict], agent_id: Optional[int] = None) -> RawLLMResponse:
         provider = provider.lower()
         if provider == "gemini":
-            return self._call_gemini_rich(model, cfg, messages)
+            return self._call_gemini_rich(model, cfg, messages, agent_id=agent_id)
         raise ValueError(f"Unknown provider: {provider}")
 
-    def _call_gemini_rich(self, model: str, cfg: ProviderConfig, messages: List[dict]) -> RawLLMResponse:
+    def _call_gemini_rich(self, model: str, cfg: ProviderConfig, messages: List[dict], agent_id: Optional[int] = None) -> RawLLMResponse:
         if len(self.gemini_keys) == 0:
             raise RuntimeError("No Gemini keys found (GEMINI_API_KEY_1..N).")
 
@@ -306,8 +291,8 @@ class LLMRouter:
         is_gemma = "gemma" in model.lower()
 
         if is_gemma and system_msg:
-            # Gemma models reject native system instructionss.
-            # Hence, meerge system into the first user message.
+            # Gemma models reject native system instructions.
+            # Hence, merge system into the first user message.
             if chat_msgs and chat_msgs[0]["role"] == "user":
                 chat_msgs[0]["content"] = f"{system_msg}\n\n{chat_msgs[0]['content']}"
             else:
@@ -336,32 +321,71 @@ class LLMRouter:
             max_output_tokens=max_tokens,
         )
 
-        # INFINITE RETRY LOOP for API Errors (Rate Limit, 500s(503, etc.))
+        # Pin this worker strictly to a dedicated API key
+        key_idx = (agent_id - 1) % len(self.gemini_keys.keys) if agent_id is not None else 0
+        k = self.gemini_keys.keys[key_idx]
+        backoff = 5.0
+
         while True:
-            for k in self.gemini_keys.iter_once_rotating():
+            # Check daily quota for this worker's isolated key
+            if self.quota and not self.quota.has_daily_quota(key_idx, model):
+                self.quota.wait_until_quota_reset()
+                continue
+
+            for _retry in range(2):
+                if self.quota:
+                    self.quota.wait_for_rpm_slot(key_idx, model)
+
                 try:
-                    client = genai.Client(api_key=k)
+                    if k not in self._clients:
+                        self._clients[k] = genai.Client(api_key=k)
+                    client = self._clients[k]
+                    
                     response = client.models.generate_content(
                         model=model,
                         contents=merged_contents,
                         config=genai_config
                     )
+                    # Record quota after successful request
+                    if self.quota:
+                        self.quota.record_request(key_idx, model)
                     
-                    content = response.text or ""
+                    # Safe response text extraction
+                    content = ""
+                    if response.candidates:
+                        candidate = response.candidates[0]
+                        if candidate.content and candidate.content.parts:
+                            content = candidate.content.parts[0].text or ""
                     return RawLLMResponse(provider="gemini", model=model, content=content, reasoning="")
                 except Exception as e:
+                    if isinstance(e, ValueError):
+                        # safety block: return empty response
+                        return RawLLMResponse(provider="gemini", model=model, content="", reasoning="")
+                    
+                    # Record quota for errors that likely reached Google (HTTP 4xx/5xx)
+                    if self.quota:
+                        self.quota.record_request(key_idx, model)
                     err_str = str(e)
-                    print(f"    [API ERROR/RATE LIMIT] {err_str[:150]}... Sleeping 5s and retrying.")
-                    time.sleep(5)
+                    print(f"    [API ERROR] {err_str[:150]}... on pinned key {key_idx+1}. Retrying on same key. Backoff {backoff:.0f}s")
+                    time.sleep(backoff)
+                    backoff = min(60.0, backoff * 2)
+                    continue
+
+            # If both retries failed, raise error for this worker
+            raise RuntimeError(f"Worker {agent_id} dedicated key failed after retries.")
 
 
 class Summarizer:
     DEFAULT_SYSTEM_PROMPT = (
         "You are an expert summarization engine for an agent in a life-simulation.\n"
-        "Your job is to merge recent events into the agent's existing running summary to create a cohesive, chronological narrative.\n"
-        "Retain relationships, key events, inventory changes, financial impacts, and overarching goals.\n"
-        "Maintain a dense, factual, third-person perspective. DO NOT output XML tools.\n"
-        "Return ONLY the updated summary text."
+        "Your task is to merge the provided recent logs into the agent's existing running summary "
+        "to create a single, cohesive, chronological narrative.\n"
+        "Crucial requirements:\n"
+        "- Focus on the long-term activities, achievements, relationships, and important events that occurred.\n"
+        "- You MUST write the summary in the first person (using 'I', 'my', 'me').\n"
+        "- The summary MUST start with the exact prefix: '[THIS IS A SUMMARY OF WHAT YOU HAVE DONE TILL NOW]'.\n"
+        "- DO NOT include or output XML tool tags.\n"
+        "- Return ONLY the updated summary text."
     )
 
     def __init__(
@@ -384,11 +408,21 @@ class Summarizer:
         self.top_p = float(top_p)
         self.system_prompt = (system_prompt or self.DEFAULT_SYSTEM_PROMPT).strip()
 
-    def summarize(self, existing_summary: str, prompt_text: str) -> str:
+    def summarize(self, existing_summary: str, prompt_text: str, agent_id: Optional[int] = None) -> str:
         if existing_summary.strip():
-            user_msg = f"EXISTING NARRATIVE SUMMARY:\n{existing_summary}\n\nNEW EVENTS TO INTEGRATE:\n{prompt_text}\n\nTask: Rewrite and update the existing narrative to seamlessly include these new events."
+            user_msg = (
+                f"EXISTING FIRST-PERSON SUMMARY:\n{existing_summary}\n\n"
+                f"NEW LOG EVENTS TO INTEGRATE:\n{prompt_text}\n\n"
+                f"Task: Update and rewrite the existing first-person summary to integrate the new events. "
+                f"Keep it in first-person. Ensure the summary starts with "
+                f"'[THIS IS A SUMMARY OF WHAT YOU HAVE DONE TILL NOW]'."
+            )
         else:
-            user_msg = f"NEW EVENTS TO SUMMARIZE:\n{prompt_text}\n\nTask: Write a cohesive narrative summary of these events."
+            user_msg = (
+                f"LOG EVENTS TO SUMMARIZE:\n{prompt_text}\n\n"
+                f"Task: Create a first-person summary of these events focusing on long-term activities. "
+                f"The summary MUST start with '[THIS IS A SUMMARY OF WHAT YOU HAVE DONE TILL NOW]'."
+            )
 
         messages = [
             {"role": "system", "content": self.system_prompt},
@@ -399,6 +433,7 @@ class Summarizer:
             self.provider,
             self.model,
             messages,
+            agent_id=agent_id,
             temperature=self.temperature,
             top_p=self.top_p,
             max_output_tokens=self.max_output_tokens,

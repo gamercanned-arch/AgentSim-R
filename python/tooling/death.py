@@ -36,8 +36,6 @@ def kill_agent(target, world, cause: str = "unknown") -> None:
         target.inventory.append(target.currently_holding)
     target.currently_holding = None
 
-    liquidated = liquidate_portfolio(target, world)
-
     pre_death_state = {
         "health": round(target.health, 2),
         "energy": round(target.energy, 2),
@@ -58,13 +56,15 @@ def kill_agent(target, world, cause: str = "unknown") -> None:
         "vehicle_type": getattr(target, "vehicle_type", ""),
     }
 
+    liquidated = liquidate_portfolio(target, world)
+
     estate = {
         "id": str(uuid.uuid4()),
         "source_agent_id": target.id,
         "source_agent_name": target.name,
         "x": float(target.x),
         "y": float(target.y),
-        "z": 0.0,
+        "z": float(target.z),
         "money": round(float(target.money), 2),
         "items": [deepcopy(i) for i in target.inventory],
     }

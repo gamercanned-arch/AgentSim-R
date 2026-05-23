@@ -17,33 +17,7 @@ from python.tooling.helpers import (
 )
 
 
-def _task_failure(agent, world, message: str, cost: int = 30):
-    task_failures = int(agent.pending_task_data.get("task_failures", 0)) + 1
-    agent.pending_task_data["task_failures"] = task_failures
-
-    if task_failures >= 3:
-        spent = agent.pending_task_data.get("energy_spent", 0.0)
-        start = agent.pending_task_data.get("start_time", world.sim_time)
-        elapsed_hours = max(0.0, (world.sim_time - start) / 3600.0)
-        refund = max(0.0, spent - (elapsed_hours * 10.0))
-        agent.energy = min(100.0, agent.energy + refund)
-        
-        agent.hourly_wage = max(0.0, agent.hourly_wage - 1.0)
-
-        if agent.currently_holding and agent.currently_holding.get("id") == "job_prop":
-            agent.currently_holding = None
-        agent.task_state = "idle"
-        agent.pending_task_data = {}
-        agent.active_task_entities = {}
-        if not agent.is_sleeping:
-            agent.current_activity = "idle"
-        return (
-            f"{message} Task cancelled after 3 failed attempts. Wage penalized -1.0. You may start over.",
-            False,
-            cost,
-        )
-
-    return f"{message} Failed attempts in this task: {task_failures}/3.", False, cost
+from python.tooling.handlers.workstudy import _task_failure
 
 
 def _find_ground_item(world, agent, item_name: str):
@@ -312,7 +286,7 @@ def handle_drop_item(agent, world, args: dict):
                 "bought": item_data.get("bought", world.sim_time),
                 "x": float(agent.x),
                 "y": float(agent.y),
-                "z": 0.0,
+                "z": float(agent.z),
                 "dropper_id": agent.id,
                 "repickup_block_until": world.sim_time + DROP_REPICKUP_COOLDOWN,
             }
@@ -351,7 +325,7 @@ def handle_drop_item(agent, world, args: dict):
             "bought": item_data.get("bought", world.sim_time),
             "x": float(agent.x),
             "y": float(agent.y),
-            "z": 0.0,
+            "z": float(agent.z),
             "dropper_id": agent.id,
             "repickup_block_until": world.sim_time + DROP_REPICKUP_COOLDOWN,
         }

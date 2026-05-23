@@ -112,7 +112,7 @@ def parse_tool_calls(tool_call_str: str) -> Tuple[List[Tuple[str, Dict[str, str]
 def parse_tool_call(tool_call_str: str) -> Tuple[str, Dict[str, str]]:
     calls, err = parse_tool_calls(tool_call_str)
     if err:
-        return err, {}
+        return "", {}
     if len(calls) != 1:
-        return f"Parse error: Expected exactly 1 <tool_call>, found {len(calls)}.", {}
+        return "", {}
     return calls[0]

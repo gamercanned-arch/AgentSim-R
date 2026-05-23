@@ -145,6 +145,13 @@ HTML_TEMPLATE = """
             document.getElementById('stat-inventory').innerHTML = `<span>${inv}</span>${holding}`;
         }
 
+        function escapeHTML(value) {
+            return (value || "").toString()
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;");
+        }
+
         function appendLog(data) {
             const div = document.createElement('div');
             div.className = "log-enter bg-gray-800 rounded-lg p-5 border border-gray-700 shadow-sm";
@@ -153,10 +160,12 @@ HTML_TEMPLATE = """
             let reasoningHTML = "";
             
             if(data.raw_model_reasoning) {
-                reasoningHTML = `<div class="text-sm text-gray-400 italic mb-4 border-l-2 border-gray-600 pl-3">"${data.raw_model_reasoning.replace(/\\n/g, '<br>')}"</div>`;
+                const safeReasoning = escapeHTML(data.raw_model_reasoning).replace(/\n/g, '<br>');
+                reasoningHTML = `<div class="text-sm text-gray-400 italic mb-4 border-l-2 border-gray-600 pl-3">"${safeReasoning}"</div>`;
             }
 
-            const outputXML = (data.processed_model_output || data.raw_model_output || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            const outputXML = escapeHTML(data.processed_model_output || data.raw_model_output || "");
+            const escapedToolResult = escapeHTML(data.tool_result || "");
             const successColor = data.tool_success ? "text-green-400" : "text-red-400";
             const successBg = data.tool_success ? "bg-green-400/10 border-green-400/20" : "bg-red-400/10 border-red-400/20";
 
@@ -171,7 +180,7 @@ HTML_TEMPLATE = """
                 </div>
                 <div class="p-3 rounded border ${successBg}">
                     <span class="text-xs uppercase tracking-wider font-bold ${successColor} block mb-1">Result</span>
-                    <span class="text-sm text-gray-200">${data.tool_result}</span>
+                    <span class="text-sm text-gray-200">${escapedToolResult}</span>
                 </div>
             `;
             logContainer.appendChild(div);
@@ -204,11 +213,14 @@ async def stream_logs(agent_id: str):
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 # Send existing
-                for line in f:
-                    if line.strip(): yield f"data: {line}\n\n"
+                while True:
+                    line = f.readline()
+                    if not line:
+                        break
+                    if line.strip():
+                        yield f"data: {line}\n\n"
                 
                 # Tail new (will safely block here post-mortem without crashing)
-                f.seek(0, os.SEEK_END)
                 while True:
                     line = f.readline()
                     if not line:

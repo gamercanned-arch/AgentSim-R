@@ -2,7 +2,7 @@ Existing summary (may be empty):
 {existing_summary}
 
 New turns to incorporate:
-{chunk_text}
+{text_chunk}
 
 Write an updated summary that is:
 - compact and factual

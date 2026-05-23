@@ -56,10 +56,6 @@ def _ensure_agent_schema(agent) -> None:
         agent.active_task_entities = {}
     if not hasattr(agent, "voicemail_inbox") or agent.voicemail_inbox is None:
         agent.voicemail_inbox = []
-    if getattr(agent, "z", 0.0) != 0.0:
-        agent.z = 0.0
-    if hasattr(agent, "vehicle_z") and getattr(agent, "vehicle_z", 0.0) != 0.0:
-        agent.vehicle_z = 0.0
 
 def _sha16(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8", errors="ignore")).hexdigest()[
@@ -110,7 +106,7 @@ def _drop_ground_item(
             "bought": item_data.get("bought", world.sim_time),
             "x": float(x),
             "y": float(y),
-            "z": 0.0,
+            "z": float(z),
             "dropper_id": int(dropper_id) if dropper_id is not None else -1,
             "repickup_block_until": float(world.sim_time + DROP_REPICKUP_COOLDOWN),
         }
@@ -185,7 +181,7 @@ def _process_pending_deliveries(world, current_time: float) -> None:
         to_id = d.get("to_id")
         sender = world.agents.get(from_id) if isinstance(from_id, int) else None
         target = world.agents.get(to_id) if isinstance(to_id, int) else None
-        fallback_xyz = (float(d.get("x", 0.0)), float(d.get("y", 0.0)), 0.0)
+        fallback_xyz = (float(d.get("x", 0.0)), float(d.get("y", 0.0)), float(d.get("z", 0.0)))
         target_name = target.name if target else "Unknown"
         
         if not target or not target.alive:
@@ -268,14 +264,18 @@ def _sanitize_chat_history(text: str, max_chars: int = 2400) -> str:
     s = s.replace("\x00", "")
     s = re.sub(r"[\r\t]+", " ", s)
     s = re.sub(r"\n{3,}", "\n\n", s).strip()
-    if len(s) > max_chars:
-        s = s[: max_chars - 20] + f"... ({len(s)} chars)"
+    # Escape angle brackets to prevent prompt injection via history
+    s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    orig_len = len(s)
+    if orig_len > max_chars:
+        s = s[: max_chars - 20] + f"... ({orig_len} chars)"
     return s
 
 def _tool_history_text(result: str, max_chars: int = 1200) -> str:
     s = "" if result is None else str(result).strip()
-    if len(s) > max_chars:
-        s = s[: max_chars - 20] + f"... ({len(s)} chars)"
+    orig_len = len(s)
+    if orig_len > max_chars:
+        s = s[: max_chars - 20] + f"... ({orig_len} chars)"
     return s
 
 def _commit_history(
@@ -299,67 +299,76 @@ def _commit_history(
 def _pop_oldest_turn(agent) -> bool:
     if not agent.chat_history:
         return False
-    while agent.chat_history and agent.chat_history[0].get("role") != "user":
-        agent.chat_history.pop(0)
-    if not agent.chat_history:
+    # Find first user message
+    start = 0
+    while start < len(agent.chat_history) and agent.chat_history[start].get("role") != "user":
+        start += 1
+    if start >= len(agent.chat_history):
+        agent.chat_history.clear()
         return False
-    agent.chat_history.pop(0)
-    while agent.chat_history and agent.chat_history[0].get("role") != "user":
-        agent.chat_history.pop(0)
+    # Find start of next turn (next user message)
+    end = start + 1
+    while end < len(agent.chat_history) and agent.chat_history[end].get("role") != "user":
+        end += 1
+    # Remove [0, end) in one O(n) slice instead of multiple O(n) pops
+    agent.chat_history = agent.chat_history[end:]
     return True
 
 def _build_trimmed_messages(agent, world, notifications_text: str, context_limit: int):
-    base_msgs = build_messages(agent.id, world, notifications_text)
-    base_prompt_text = render_prompt(base_msgs)
-    base_estimated_tokens = estimate_prompt_tokens(
-        base_msgs, prompt_text=base_prompt_text
-    )
-    
-    if base_estimated_tokens + MAX_NEW_TOKENS >= context_limit:
-        agent.chat_history.clear()
-        trimmed_msgs = build_messages(agent.id, world, notifications_text)
-        trimmed_prompt_text = render_prompt(trimmed_msgs)
-        trimmed_estimated_tokens = estimate_prompt_tokens(
-            trimmed_msgs, prompt_text=trimmed_prompt_text
-        )
-        
-        if trimmed_estimated_tokens + MAX_NEW_TOKENS >= context_limit:
-            from python.config import CHARS_PER_TOKEN
-            overflow = (trimmed_estimated_tokens + MAX_NEW_TOKENS) - context_limit
-            chars_to_remove = int(overflow * CHARS_PER_TOKEN) + 200
-            
-            # "just summarize it bro"
-            # Instead of blindly amputating the tail (which destroys critical schemas and catalogs),
-            # we ask the LLM to compress the rules. If it's absurdly large (e.g. from the test suite), reset.
-            if len(agent.system_prompt) > 100_000:
-                agent.system_prompt = "" 
-            else:
-                compression_msgs = [
-                    {"role": "system", "content": "You are a compression engine. Summarize the following system rules densely, but YOU MUST KEEP ALL XML tool schemas, location hours, and catalog prices perfectly intact."},
-                    {"role": "user", "content": agent.system_prompt}
-                ]
-                compressed, _, _ = call_server(compression_msgs, agent.id)
-                if compressed and "[SERVER ERROR]" not in compressed:
-                    agent.system_prompt = compressed + "\n[System prompt compressed due to context limits]"
-                else:
-                    # Fallback middle-slice if server fails: preserves head (Tools) and tail (Catalogs).
-                    sp = agent.system_prompt
-                    if len(sp) > chars_to_remove:
-                        mid = len(sp) // 2
-                        half = chars_to_remove // 2
-                        agent.system_prompt = sp[:mid - half] + "\n...[Rules Compressed]...\n" + sp[mid + half:]
+    msgs = build_messages(agent.id, world, notifications_text)
+    prompt_text = render_prompt(msgs)
+    estimated_tokens = estimate_prompt_tokens(msgs, prompt_text=prompt_text)
 
-            final_msgs = build_messages(agent.id, world, notifications_text)
-            final_prompt_text = render_prompt(final_msgs)
-            
-            # Forcefully clamp the estimated tokens so `run_tick` permits generation
-            final_estimated = min(
-                estimate_prompt_tokens(final_msgs, prompt_text=final_prompt_text),
-                context_limit - MAX_NEW_TOKENS - 10
-            )
-            return final_msgs, final_prompt_text, final_estimated
-            
-    return base_msgs, base_prompt_text, base_estimated_tokens
+    while estimated_tokens + MAX_NEW_TOKENS >= context_limit and _pop_oldest_turn(agent):
+        msgs = build_messages(agent.id, world, notifications_text)
+        prompt_text = render_prompt(msgs)
+        estimated_tokens = estimate_prompt_tokens(msgs, prompt_text=prompt_text)
+
+    if estimated_tokens + MAX_NEW_TOKENS >= context_limit:
+        from python.config import CHARS_PER_TOKEN
+        overflow = (estimated_tokens + MAX_NEW_TOKENS) - context_limit
+        chars_to_remove = int(overflow * CHARS_PER_TOKEN) + 200
+
+        # Compress oversized system rules only after history has been trimmed.
+        attempts = getattr(agent, '_compress_attempts', 0) + 1
+        agent._compress_attempts = attempts
+
+        if attempts > 2 or len(agent.system_prompt) > 100_000:
+            agent.system_prompt = ""
+            agent._compress_attempts = 0
+        else:
+            compression_msgs = [
+                {"role": "system", "content": "You are a compression engine. Summarize the following system rules densely, but YOU MUST KEEP ALL XML tool schemas, location hours, and catalog prices perfectly intact."},
+                {"role": "user", "content": agent.system_prompt}
+            ]
+            compressed = None
+            for _compress_retry in range(3):
+                try:
+                    result, _, _ = call_server(compression_msgs, agent.id)
+                    if result and "[SERVER ERROR]" not in result:
+                        compressed = result
+                        break
+                except Exception:
+                    import time as _time
+                    _time.sleep(2.0 * (_compress_retry + 1))
+            if compressed:
+                agent.system_prompt = compressed + "\n[System prompt compressed due to context limits]"
+                agent._compress_attempts = 0
+            else:
+                sp = agent.system_prompt
+                if len(sp) > chars_to_remove:
+                    mid = len(sp) // 2
+                    half = chars_to_remove // 2
+                    agent.system_prompt = sp[:mid - half] + "\n...[Rules Compressed]...\n" + sp[mid + half:]
+
+        msgs = build_messages(agent.id, world, notifications_text)
+        prompt_text = render_prompt(msgs)
+        estimated_tokens = min(
+            estimate_prompt_tokens(msgs, prompt_text=prompt_text),
+            context_limit - MAX_NEW_TOKENS - 10
+        )
+
+    return msgs, prompt_text, estimated_tokens
 
 def _get_raw_llm_fields(agent_id: int, processed: str) -> tuple[str, str, str, str]:
     raw_provider = ""
@@ -386,11 +395,11 @@ def _get_raw_llm_fields(agent_id: int, processed: str) -> tuple[str, str, str, s
         return raw_provider, raw_model, raw_content, raw_reasoning
     return raw_provider, raw_model, raw_content, raw_reasoning
 
-def run_tick(world) -> bool:
+def run_tick(world) -> None:
     while True:
         alive_agents = [a for a in world.agents.values() if a.alive]
         if not alive_agents:
-            return False
+            return
         agent = min(alive_agents, key=lambda a: (a.busy_until, a.id))
         _ensure_agent_schema(agent)
         if agent.busy_until > world.sim_time:
@@ -414,7 +423,7 @@ def run_tick(world) -> bool:
             _process_pending_deliveries(world, world.last_passive)
         alive_agents = [a for a in world.agents.values() if a.alive]
         if not alive_agents:
-            return False
+            return
         ready_agents = [a for a in alive_agents if a.busy_until <= world.sim_time]
         if ready_agents:
             agent = min(ready_agents, key=lambda a: (a.busy_until, a.id))
@@ -459,7 +468,7 @@ def run_tick(world) -> bool:
             }
         )
         world.sim_time = agent.busy_until
-        return False
+        return
         
     pre_state = snapshot_agent(agent)
 
@@ -512,6 +521,9 @@ def run_tick(world) -> bool:
         agent.fail_counter = 0
     else:
         agent.fail_counter += 1
+        # Escalating cooldown after consecutive failures to prevent infinite loops
+        if agent.fail_counter >= 5:
+            agent.busy_until = max(agent.busy_until, world.sim_time + 300)
         
     _refresh_agent_activity(agent, world.sim_time)
     post_state = snapshot_agent(agent)
@@ -537,7 +549,7 @@ def run_tick(world) -> bool:
         notifications_shown=shown_lines,
         notifications_remaining=remaining_count,
     )
-    return False
+    return
 
 def _refresh_agent_activity(agent, current_time: float) -> None:
     if not agent.alive:
@@ -581,7 +593,6 @@ def _process_market_queues(world, sim_time: float) -> None:
     for agent in world.agents.values():
         if not agent.alive or not agent.pending_market_orders:
             continue
-        remaining = []
         for order in agent.pending_market_orders:
             shares = int(order.get("shares", 0))
             if shares <= 0:
@@ -616,7 +627,7 @@ def _process_market_queues(world, sim_time: float) -> None:
                     agent.pending_notifications.append(
                         f"MARKET: Queued sell for {shares} shares failed (insufficient shares)."
                     )
-        agent.pending_market_orders = remaining
+        agent.pending_market_orders = []
 
 def _update_market_price(world, sim_time: float, dt_seconds: float) -> None:
     p = world.market_price
@@ -639,11 +650,7 @@ def _update_market_price(world, sim_time: float, dt_seconds: float) -> None:
         new_price = world.market_price * gbm_multiplier * impact_multiplier
         world.market_price = max(10.0, min(1000.0, round(new_price, 4)))
         
-        # Government Bailout if crashes
-        if world.market_price < 10.0:
-            world.market_price = 10.0
-            world.global_news.append("Government bailout! Market reset to $10.00.")
-            world.global_news = world.global_news[-20:]
+        # Bailout block removed: price is already clamped to >= 10.0 by max() above
             
         world.price_history.append(round(world.market_price, 4))
         if len(world.price_history) > 2016:
@@ -680,20 +687,21 @@ def _apply_midnight_taxes(world, tick_time: float) -> None:
     last_tax_day = int(getattr(world, "last_tax_day"))
     if current_day <= last_tax_day:
         return
-    for _day in range(last_tax_day + 1, current_day + 1):
+    # Cap to at most 1 day to prevent compounding tax cascade on time jumps
+    for _day in range(last_tax_day + 1, min(last_tax_day + 2, current_day + 1)):
         for agent in world.agents.values():
             if not agent.alive:
                 continue
             if agent.money < TAX_EXEMPT_BELOW_CASH:
                 continue
                 
-            # Progressive tax scale
+            # Progressive tax scale (reduced rates)
             if agent.money > 5000:
-                rate = 0.15
+                rate = 0.03
             elif agent.money > 1000:
-                rate = 0.10
+                rate = 0.02
             else:
-                rate = 0.05
+                rate = 0.01
                 
             tax_amount = round(agent.money * rate, 2)
             if tax_amount <= 0:
@@ -947,17 +955,15 @@ def _apply_interruption_rollback(agent, world) -> None:
         
         agent.energy = min(100.0, agent.energy + meta["energy_cost"] * (1.0 - ratio))
         if meta["fuel_cost"] > 0:
-            agent.money += meta["fuel_cost"] * (1.0 - ratio)
+            fuel_refund = meta["fuel_cost"] * (1.0 - ratio)
+            agent.money += fuel_refund
+            # Also roll back the expense tracking for unspent fuel
+            agent.expenses = max(0.0, agent.expenses - fuel_refund)
+            agent.total_expenses = max(0.0, agent.total_expenses - fuel_refund)
             
         delattr(agent, "_transit_meta")
         agent.current_activity = "idle"
         agent.busy_until = current_time
-        interrupted = True
-
-    elif getattr(agent, "task_state", "idle") != "idle":
-        from python.tooling.handlers.workstudy import _clear_task_state
-        _clear_task_state(agent, world, current_time)
-        agent.busy_until = min(float(agent.busy_until), current_time)
         interrupted = True
 
     elif agent.current_activity in ("working", "studying") and hasattr(agent, "_work_meta"):
@@ -966,14 +972,27 @@ def _apply_interruption_rollback(agent, world) -> None:
         total_time = meta["total_time"]
         ratio = max(0.0, min(1.0, (current_time - start_time) / max(1.0, total_time)))
         
-        agent.money -= meta.get("pay", 0.0) * (1.0 - ratio)
-        agent.education = max(0.0, agent.education - meta.get("edu_gain", 0.0) * (1.0 - ratio))
-        agent.hourly_wage = max(0.0, agent.hourly_wage - meta.get("wage_gain", 0.0) * (1.0 - ratio))
-        agent.energy = min(100.0, agent.energy + meta.get("energy_spent", 0.0) * (1.0 - ratio))
-        
+        # Proportional rollback: claw back only the unearned portion
+        # Keep what was earned proportionally to time spent
+        unearned_ratio = max(0.0, 1.0 - ratio)
+        agent.money = max(0.0, agent.money - meta.get("pay", 0.0) * unearned_ratio)
+        agent.education = max(0.0, agent.education - meta.get("edu_gain", 0.0) * unearned_ratio)
+        agent.hourly_wage = max(0.0, agent.hourly_wage - meta.get("wage_gain", 0.0) * unearned_ratio)
+        agent.energy = min(100.0, agent.energy + meta.get("energy_spent", 0.0) * unearned_ratio)
+
+        if getattr(agent, "task_state", "idle") != "idle":
+            from python.tooling.handlers.workstudy import _clear_task_state
+            _clear_task_state(agent, world, current_time, reset_activity=False)
+
         delattr(agent, "_work_meta")
         agent.current_activity = "idle"
         agent.busy_until = current_time
+        interrupted = True
+
+    elif getattr(agent, "task_state", "idle") != "idle":
+        from python.tooling.handlers.workstudy import _clear_task_state
+        _clear_task_state(agent, world, current_time)
+        agent.busy_until = min(float(agent.busy_until), current_time)
         interrupted = True
 
     elif float(agent.busy_until) > current_time:

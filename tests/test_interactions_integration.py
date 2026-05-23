@@ -224,7 +224,7 @@ def test_attack_mid_task_cancels_task_and_interrupts_busy_until(temp_logs, monke
     assert b.health == pytest.approx(95.0)
 
 
-def test_attack_time_busy_non_task_target_fails(temp_logs, monkeypatch):
+def test_attack_time_busy_non_task_target_succeeds(temp_logs, monkeypatch):
     import python.scheduler
 
     w, a, b = make_world_two_agents()
@@ -232,12 +232,14 @@ def test_attack_time_busy_non_task_target_fails(temp_logs, monkeypatch):
     b.is_sleeping = False
     b.busy_until = 1000.0
 
+    monkeypatch.setattr(random, "uniform", lambda lo, hi: 5.0)
+
     plans = {0: [tool_xml("attack_person", person="Bob")]}
     stub = StubServer(plans)
     monkeypatch.setattr(python.scheduler, "call_server", stub)
 
     python.scheduler.run_tick(w)
-    assert b.health == pytest.approx(100.0)
+    assert b.health == pytest.approx(95.0)  # Attack succeeds, damage applied
 
 
 def test_change_status_sleeping_target_fails_and_does_not_queue(temp_logs, monkeypatch):

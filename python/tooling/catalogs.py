@@ -117,5 +117,12 @@ def generate_catalog_text() -> str:
 
     lines.append("## Education Locations")
     lines.append("- " + ", ".join(EDUCATION_LOCATIONS))
+    lines.append("")
+
+    lines.append("## Education Tuition")
+    lines.append("- Base tuition: $2,000 per session")
+    lines.append("- Master's degree: $4,000 per session")
+    lines.append("- PhD/Doctorate: $8,000 per session")
+    lines.append("- Student discount: Tuition capped at $150 if your job title contains 'student'")
 
     return "\n".join(lines)

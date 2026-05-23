@@ -11,7 +11,7 @@ from python.logger import log_global
 from python.persistence import load_world, save_exists, save_world
 from python.scheduler import run_tick
 
-SAVE_PATH = "saves/world.json"
+SAVE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "saves", "world.json"))
 
 AUTOSAVE_TICKS = int(os.environ.get("AUTOSAVE_TICKS", "").strip() or "10")
 
@@ -40,6 +40,7 @@ def _wipe_cache_and_logs() -> None:
 def main():
     load_dotenv(override=True)
 
+    os.makedirs(os.path.dirname(SAVE_PATH), exist_ok=True)
     if save_exists(SAVE_PATH):
         choice = input("Save found. Continue from save? [c]ontinue / [w]ipe: ").strip().lower()
         if choice.startswith("w"):
@@ -53,11 +54,6 @@ def main():
             return
         _wipe_cache_and_logs()
         world = build_starting_world()
-
-    for a in world.agents.values():
-        a.z = 0.0
-        if hasattr(a, "vehicle_z"):
-            a.vehicle_z = 0.0
 
     for agent in world.agents.values():
         print(
@@ -110,6 +106,8 @@ def main():
         print("\n[USER ABORTED]")
     except Exception as e:
         print(f"\n[FATAL ERROR] {str(e)}")
+        save_world(world, SAVE_PATH + ".crash")
+        return
 
     save_world(world, SAVE_PATH)
 

@@ -65,7 +65,7 @@ REGISTRY: Dict[str, ToolHandler] = {
     "attack_person": handle_attack_person,
 }
 
-TASK_ALLOWED = {"interact_with", "pick_item"}
+TASK_ALLOWED = {"interact_with", "pick_item", "walk"}
 
 FALLBACK_TOOL_SCHEMAS: Dict[str, set[str]] = {
     "talk_to": {"person", "message"},
@@ -102,7 +102,12 @@ for t in _tools:
     name = str(t.get("name", "")).strip()
     if not name:
         continue
-    TOOL_SCHEMAS[name] = set(t.get("params", []) or [])
+    params = t.get("params", None)
+    if params is None:
+        params = t.get("parameters", [])
+    if isinstance(params, dict):
+        params = list((params.get("properties") or {}).keys())
+    TOOL_SCHEMAS[name] = set(params or [])
 
 
 def _validate_schema(name: str, args: dict) -> str | None:
@@ -122,11 +127,6 @@ def _validate_schema(name: str, args: dict) -> str | None:
     return None
 
 
-def _clamp_agent_floor1(agent) -> None:
-    if getattr(agent, "z", 0.0) != 0.0:
-        agent.z = 0.0
-    if hasattr(agent, "vehicle_z") and getattr(agent, "vehicle_z", 0.0) != 0.0:
-        agent.vehicle_z = 0.0
 
 
 def _execute_one(name: str, args: dict, agent, world) -> Tuple[str, bool, int]:
@@ -163,8 +163,6 @@ def _execute_one(name: str, args: dict, agent, world) -> Tuple[str, bool, int]:
 
     try:
         res, suc, cost = handler(agent, world, args)
-        if suc:
-            _clamp_agent_floor1(agent)
         return res, suc, cost
     except Exception as e:
         agent.failed_calls += 1

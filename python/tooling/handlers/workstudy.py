@@ -4,9 +4,10 @@ from typing import Tuple
 from python.locations import get_current_location_def, get_location_by_name
 from python.tooling.catalogs import EDUCATION_LOCATIONS
 from python.tooling.helpers import (
+    busy_reason,
     can_physically_reach_person,
     check_open_hours,
-    is_busy,
+    is_unavailable,
     normalize_label,
     record_expense,
     resolve_workplace_name,
@@ -14,17 +15,19 @@ from python.tooling.helpers import (
 )
 from python.tooling.scenarios import pick_scenario, pool_key_for_job
 
-def _task_failure(agent, message: str, cost: int = 60) -> Tuple[str, bool, int]:
+def _task_failure(agent, world, message: str, cost: int = 60) -> Tuple[str, bool, int]:
     task_failures = int(agent.pending_task_data.get("task_failures", 0)) + 1
     agent.pending_task_data["task_failures"] = task_failures
     if task_failures >= 3:
-        agent.hourly_wage = max(0.0, agent.hourly_wage - 1.0)
-        _clear_task_state(agent, world=None, current_time=agent.busy_until)
-        return (
-            f"{message} Task cancelled after 3 failed attempts. Wage penalized -1.0. You may start over.",
-            False,
-            cost,
-        )
+        is_education = agent.pending_task_data.get("type") == "get_education"
+        if not is_education:
+            agent.hourly_wage = max(0.0, agent.hourly_wage - 1.0)
+        _clear_task_state(agent, world, current_time=float(getattr(agent, 'busy_until', 0.0)))
+        msg = f"{message} Task cancelled after 3 failed attempts."
+        if not is_education:
+            msg += " Wage penalized -1.0."
+        msg += " You may start over."
+        return (msg, False, cost)
     return (f"{message} Failed attempts in this task: {task_failures}/3.", False, cost)
 
 def _clear_task_state(agent, world, current_time: float, reset_activity: bool = True) -> None:
@@ -53,10 +56,7 @@ def _clear_task_state(agent, world, current_time: float, reset_activity: bool = 
 
 def _extract_choice_letter(action: str) -> str:
     text = str(action or "").strip()
-    m = re.fullmatch(r"""['"]?\s*([ABCabc])\s*['"]?""", text)
-    if m:
-        return m.group(1).upper()
-    m = re.search(r"\b([ABCabc])\b", text)
+    m = re.fullmatch(r"""(?:answer\s*:?\s*)?['"]?\s*([ABCabc])\s*['"]?""", text, flags=re.IGNORECASE)
     if m:
         return m.group(1).upper()
     return ""
@@ -284,7 +284,7 @@ def handle_interact_with(agent, world, args: dict):
     
     if agent.task_state == "idle":
         act_norm = normalize_label(action)
-        if any(k in act_norm for k in ("work", "study", "shift", "job", "exam", "earn", "salary")):
+        if any(re.search(r'\b' + k + r'\b', act_norm) for k in ("work", "study", "shift", "job", "exam", "earn", "salary")):
             agent.failed_calls += 1
             return (
                 "This does not count as paid work or study. Use work_job or get_education to start a task.",
@@ -297,18 +297,19 @@ def handle_interact_with(agent, world, args: dict):
         required_target = str(flavor.get("obj", "")).strip()
         if not _task_location_ok(agent):
             agent.failed_calls += 1
-            return _task_failure(agent, "You left the required task location.", 60)
+            return _task_failure(agent, world, "You left the required task location.", 60)
         if not _task_target_ok(agent, target) or normalize_label(target) != normalize_label(required_target):
             agent.failed_calls += 1
             return _task_failure(
                 agent,
+                world,
                 f"You must interact with {required_target} to complete the task.",
                 60,
             )
         choice = _extract_choice_letter(action)
         if choice not in {"A", "B", "C"}:
             agent.failed_calls += 1
-            return _task_failure(agent, "Answer must clearly be A, B, or C.", 60)
+            return _task_failure(agent, world, "Answer must clearly be A, B, or C.", 60)
             
         data = dict(agent.pending_task_data)
         if agent.currently_holding and agent.currently_holding.get("id") == "job_prop":
@@ -326,7 +327,7 @@ def handle_interact_with(agent, world, args: dict):
             edu_gain = 5.0 if correct else 1.0
             wage_gain = 5.0 if correct else 1.0
             agent.education = min(100.0, agent.education + edu_gain)
-            agent.hourly_wage += wage_gain
+            agent.hourly_wage = min(200.0, agent.hourly_wage + wage_gain)
             
             agent._work_meta = {
                 "start_time": float(world.sim_time),
@@ -367,8 +368,7 @@ def handle_interact_with(agent, world, args: dict):
         
     if agent.task_state == "job_pick":
         agent.failed_calls += 1
-        _clear_task_state(agent, world, world.sim_time)
-        return _task_failure(agent, "You need to pick up the required task prop first.", 60)
+        return _task_failure(agent, world, "You need to pick up the required task prop first.", 60)
         
     target_agent = next(
         (a for a in world.agents.values() if a.alive and normalize_label(a.name) == normalize_label(target)),
@@ -378,9 +378,10 @@ def handle_interact_with(agent, world, args: dict):
         if getattr(target_agent, "current_activity", "") == "moving":
             agent.failed_calls += 1
             return "Target is currently in transit. Call them or wait until they arrive.", False, 60
-        if is_busy(target_agent, world.sim_time):
+        if is_unavailable(target_agent, world.sim_time):
+            reason = busy_reason(target_agent, world.sim_time)
             agent.failed_calls += 1
-            return (f"{target_agent.name} is currently sleeping (DND).", False, 60)
+            return (f"{target_agent.name} is currently {reason} (unavailable).", False, 60)
         ok, reason = can_physically_reach_person(agent, target_agent, 20.0)
         if not ok:
             agent.failed_calls += 1
@@ -404,12 +405,9 @@ def handle_interact_with(agent, world, args: dict):
                 continue
             if abs(float(obj.get("z", 0.0)) - agent.z) > 1.0:
                 continue
-            if "target_z" in obj and float(obj["target_z"]) != 0.0:
-                agent.failed_calls += 1
-                return "Floor changes are disabled for now. Stay on floor 1 (Z=0).", False, 60
             if "target_z" in obj:
                 agent.z = float(obj["target_z"])
-                return f"Used {obj['name']}. Moved to floor Z={agent.z}.", True, 60
+                return f"Used {obj['name']} ({action}). Elevation changed to Z={agent.z:.1f}.", True, 60
             return f"Used {obj['name']} ({action}).", True, 60
             
     agent.failed_calls += 1

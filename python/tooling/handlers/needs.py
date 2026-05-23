@@ -54,7 +54,12 @@ def handle_do_hobby(agent, world, args: dict):
     agent.happiness = min(100.0, agent.happiness + 10.0)
 
     item_data["durability"] = item_data.get("durability", 5) - 1
-    msg = f"Enjoyed hobby time with {item_data.get('item','Unknown')}. Stress fell."
+    desc = str(args.get("description", "")).strip()
+    if desc:
+        desc = desc.encode("ascii", "ignore").decode("ascii")
+        msg = f"Enjoyed hobby time with {item_data.get('item','Unknown')} ({desc}). Stress fell."
+    else:
+        msg = f"Enjoyed hobby time with {item_data.get('item','Unknown')}. Stress fell."
 
     if item_data["durability"] <= 0:
         if source == "hand":

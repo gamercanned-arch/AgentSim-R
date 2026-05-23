@@ -14,6 +14,24 @@ def _ensure_dir(path: str) -> None:
         os.makedirs(d, exist_ok=True)
 
 
+def _load_json_file(path: str) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        payload = json.load(f) or {}
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected JSON object in {path}")
+    return payload
+
+
+def _load_json_with_tmp_fallback(path: str) -> Dict[str, Any]:
+    try:
+        return _load_json_file(path)
+    except (OSError, json.JSONDecodeError, ValueError):
+        tmp_path = path + ".tmp"
+        if os.path.exists(tmp_path):
+            return _load_json_file(tmp_path)
+        raise
+
+
 def _agent_to_dict(agent: AgentState) -> Dict[str, Any]:
     base = asdict(agent) if is_dataclass(agent) else dict(agent.__dict__)
     
@@ -26,9 +44,12 @@ def _agent_to_dict(agent: AgentState) -> Dict[str, Any]:
     extras = {}
     for k in (
         "_sleep_start",
+        "_status_cooldowns",
         "summary_text",
         "summary_turns_summarized",
         "_summary_checked_at_time",
+        "_transit_meta",
+        "_work_meta",
     ):
         if hasattr(agent, k):
             extras[k] = getattr(agent, k)
@@ -56,6 +77,15 @@ def _agent_from_dict(d: Dict[str, Any]) -> AgentState:
         extras.setdefault("unknown_fields", {}).update(unknown)
 
     agent = AgentState(**clean)
+    for field_name in ("inventory", "pending_notifications", "chat_history",
+                       "pending_market_orders", "pending_task_data",
+                       "pending_status_requests", "active_task_entities",
+                       "recent_scenarios", "voicemail_inbox"):
+        if getattr(agent, field_name, None) is None:
+            default = {} if field_name in ("pending_task_data", "pending_status_requests",
+                                           "active_task_entities", "recent_scenarios") else []
+            setattr(agent, field_name, default)
+
     for k, v in extras.items():
         setattr(agent, k, v)
     return agent
@@ -79,12 +109,16 @@ def world_to_dict(world: WorldState) -> Dict[str, Any]:
             "ground_items": list(world.ground_items),
             "corpse_estates": list(world.corpse_estates),
             "pending_deliveries": list(world.pending_deliveries),
+            "last_tax_day": int(world.last_tax_day),
         },
         "agents": [_agent_to_dict(a) for a in world.agents.values()],
     }
 
 
 def world_from_dict(payload: Dict[str, Any]) -> WorldState:
+    version = payload.get("version", 0)
+    if version != SAVE_VERSION:
+        print(f"[WARNING] Save version mismatch: file has v{version}, code expects v{SAVE_VERSION}")
     w = WorldState()
     wblk = payload.get("world", {}) or {}
 
@@ -98,10 +132,14 @@ def world_from_dict(payload: Dict[str, Any]) -> WorldState:
     w.store_inventory = dict(wblk.get("store_inventory", {}))
     w.last_restock_time = float(wblk.get("last_restock_time", 0.0))
     w.last_market_tick = float(wblk.get("last_market_tick", w.sim_time))
-    w.vacant_home_lots = dict(wblk.get("vacant_home_lots", w.vacant_home_lots))
+    w.vacant_home_lots = {
+        str(home_type): list(names or [])
+        for home_type, names in dict(wblk.get("vacant_home_lots", w.vacant_home_lots)).items()
+    }
     w.ground_items = list(wblk.get("ground_items", []))
     w.corpse_estates = list(wblk.get("corpse_estates", []))
     w.pending_deliveries = list(wblk.get("pending_deliveries", []))
+    w.last_tax_day = int(wblk.get("last_tax_day", 0))
 
     w.agents = {}
     for ad in payload.get("agents", []) or []:
@@ -113,32 +151,34 @@ def world_from_dict(payload: Dict[str, Any]) -> WorldState:
 
 def save_world(world: WorldState, path: str = "saves/world.json") -> None:
     _ensure_dir(path)
-    
-    # Save main file
+    save_dir = os.path.dirname(os.path.abspath(path))
     data = world_to_dict(world)
+    pending_replacements: list[tuple[str, str]] = []
+
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+        json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+    pending_replacements.append((tmp, path))
 
-    # Save agent histories as side-cars
-    save_dir = os.path.dirname(os.path.abspath(path))
     for agent in world.agents.values():
         hist_path = os.path.join(save_dir, f"agent_history_{agent.id}.json")
+        hist_tmp = hist_path + ".tmp"
         hist_data = {
             "system_prompt": agent.system_prompt,
             "chat_history": agent.chat_history,
             "summary_text": getattr(agent, "summary_text", ""),
             "summary_turns_summarized": getattr(agent, "summary_turns_summarized", 0)
         }
-        with open(hist_path + ".tmp", "w", encoding="utf-8") as f:
-            json.dump(hist_data, f, ensure_ascii=False, indent=2)
-        os.replace(hist_path + ".tmp", hist_path)
+        with open(hist_tmp, "w", encoding="utf-8") as f:
+            json.dump(hist_data, f, ensure_ascii=False, indent=2, default=str)
+        pending_replacements.append((hist_tmp, hist_path))
+
+    for tmp_path, final_path in pending_replacements:
+        os.replace(tmp_path, final_path)
 
 
 def load_world(path: str = "saves/world.json") -> WorldState:
-    with open(path, "r", encoding="utf-8") as f:
-        payload = json.load(f)
+    payload = _load_json_with_tmp_fallback(path)
     world = world_from_dict(payload)
 
     # Load agent histories side-cars
@@ -146,12 +186,14 @@ def load_world(path: str = "saves/world.json") -> WorldState:
     for agent in world.agents.values():
         hist_path = os.path.join(save_dir, f"agent_history_{agent.id}.json")
         if os.path.exists(hist_path):
-            with open(hist_path, "r", encoding="utf-8") as f:
-                hist_data = json.load(f)
-                agent.system_prompt = hist_data.get("system_prompt", "")
-                agent.chat_history = hist_data.get("chat_history", [])
-                agent.summary_text = hist_data.get("summary_text", "")
-                agent.summary_turns_summarized = hist_data.get("summary_turns_summarized", 0)
+            try:
+                hist_data = _load_json_with_tmp_fallback(hist_path)
+            except (OSError, json.JSONDecodeError, ValueError):
+                hist_data = {}
+            agent.system_prompt = hist_data.get("system_prompt", "")
+            agent.chat_history = hist_data.get("chat_history", [])
+            agent.summary_text = hist_data.get("summary_text", "")
+            agent.summary_turns_summarized = hist_data.get("summary_turns_summarized", 0)
                 
     return world
 

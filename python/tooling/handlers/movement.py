@@ -29,22 +29,7 @@ _COORD_RE = re.compile(
     r"^\s*\(?\s*-?\d+(?:\.\d+)?\s*(?:,\s*|\s+)-?\d+(?:\.\d+)?(?:\s*(?:,\s*|\s+)-?\d+(?:\.\d+)?)?\s*\)?\s*$"
 )
 
-def _bearing_to_text(dx: float, dy: float) -> str:
-    if abs(dx) < 1e-6 and abs(dy) < 1e-6:
-        return "here"
-    ang = math.degrees(math.atan2(dy, dx))
-    dirs = [
-        ("east", 0),
-        ("northeast", 45),
-        ("north", 90),
-        ("northwest", 135),
-        ("west", 180),
-        ("southwest", -135),
-        ("south", -90),
-        ("southeast", -45),
-    ]
-    best = min(dirs, key=lambda d: abs(((ang - d[1] + 180) % 360) - 180))
-    return best[0]
+from python.prompting import _bearing_to_text
 
 def _looks_like_coordinates(text: str) -> bool:
     return bool(_COORD_RE.match(str(text or "").strip()))

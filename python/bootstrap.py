@@ -49,7 +49,7 @@ def build_starting_world(
 
         home_type = profile["home"]
         # Floor-1-only: if no floor-1 lot exists, fail loudly.
-        home_location = world.allocate_home_lot(home_type, prefer_floor1=True)
+        home_location = world.allocate_home_lot(home_type, require_floor1=True)
         if not home_location:
             raise RuntimeError(
                 f"No vacant FLOOR 1 home lots available for starting home type '{home_type}'."
@@ -64,14 +64,12 @@ def build_starting_world(
         if loc_def:
             agent.x = (loc_def.x_min + loc_def.x_max) / 2.0
             agent.y = (loc_def.y_min + loc_def.y_max) / 2.0
-            # FIX 8: Ground-floor-only — always clamp agent Z to 0.0 at bootstrap.
-            # Previously used loc_def.z_min which could be non-zero for upper-floor
-            # apartments, creating a coordinate mismatch with the Z=0 invariant.
-            agent.z = 0.0
+            # Preserve the floor elevation assigned to the home lot.
+            agent.z = loc_def.z_min
 
             outside = get_location_outside_entrance_point(loc_def, offset_m=15.0)
             agent.vehicle_x, agent.vehicle_y = outside[0], outside[1]
-            agent.vehicle_z = 0.0  # FIX 8: clamp vehicle Z to ground plane
+            agent.vehicle_z = outside[2]
         else:
             agent.vehicle_x, agent.vehicle_y, agent.vehicle_z = agent.x, agent.y, 0.0
 
