@@ -17,3 +17,5 @@ nul
 __pycache__
 models_list
 saves
+.uv_cache
+saves

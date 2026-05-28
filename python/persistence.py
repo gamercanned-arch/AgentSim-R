@@ -32,6 +32,31 @@ def _load_json_with_tmp_fallback(path: str) -> Dict[str, Any]:
         raise
 
 
+def _move_or_copy_tree(src: str, dst: str, *, require_src_removed: bool = False) -> bool:
+    import shutil
+
+    if not os.path.exists(src):
+        return False
+    try:
+        if os.path.exists(dst):
+            shutil.rmtree(dst)
+        os.rename(src, dst)
+        return True
+    except OSError:
+        try:
+            if os.path.exists(dst):
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
+            try:
+                shutil.rmtree(src)
+            except OSError:
+                if require_src_removed:
+                    return False
+            return True
+        except OSError:
+            return False
+
+
 def _agent_to_dict(agent: AgentState) -> Dict[str, Any]:
     base = asdict(agent) if is_dataclass(agent) else dict(agent.__dict__)
     
@@ -110,6 +135,7 @@ def world_to_dict(world: WorldState) -> Dict[str, Any]:
             "corpse_estates": list(world.corpse_estates),
             "pending_deliveries": list(world.pending_deliveries),
             "last_tax_day": int(world.last_tax_day),
+            "token_usage": dict(world.token_usage),
         },
         "agents": [_agent_to_dict(a) for a in world.agents.values()],
     }
@@ -140,6 +166,7 @@ def world_from_dict(payload: Dict[str, Any]) -> WorldState:
     w.corpse_estates = list(wblk.get("corpse_estates", []))
     w.pending_deliveries = list(wblk.get("pending_deliveries", []))
     w.last_tax_day = int(wblk.get("last_tax_day", 0))
+    w.token_usage = dict(wblk.get("token_usage", {}))
 
     w.agents = {}
     for ad in payload.get("agents", []) or []:
@@ -150,34 +177,93 @@ def world_from_dict(payload: Dict[str, Any]) -> WorldState:
 
 
 def save_world(world: WorldState, path: str = "saves/world.json") -> None:
-    _ensure_dir(path)
-    save_dir = os.path.dirname(os.path.abspath(path))
+    import shutil
+    final_save_dir = os.path.dirname(os.path.abspath(path))
+    parent_dir = os.path.dirname(final_save_dir)
+    save_dir_name = os.path.basename(final_save_dir)
+    
+    # 1. Prepare tmp directory next to the final save directory
+    tmp_save_dir = os.path.join(parent_dir, save_dir_name + ".tmp")
+    if os.path.exists(tmp_save_dir):
+        try:
+            shutil.rmtree(tmp_save_dir)
+        except OSError:
+            pass
+    os.makedirs(tmp_save_dir, exist_ok=True)
+    
+    # 2. Write all files into tmp_save_dir
+    tmp_world_path = os.path.join(tmp_save_dir, os.path.basename(path))
     data = world_to_dict(world)
-    pending_replacements: list[tuple[str, str]] = []
-
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    with open(tmp_world_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2, default=str)
-    pending_replacements.append((tmp, path))
-
+        
     for agent in world.agents.values():
-        hist_path = os.path.join(save_dir, f"agent_history_{agent.id}.json")
-        hist_tmp = hist_path + ".tmp"
+        hist_path = os.path.join(tmp_save_dir, f"agent_history_{agent.id}.json")
         hist_data = {
             "system_prompt": agent.system_prompt,
             "chat_history": agent.chat_history,
             "summary_text": getattr(agent, "summary_text", ""),
-            "summary_turns_summarized": getattr(agent, "summary_turns_summarized", 0)
+            "summary_turns_summarized": getattr(agent, "summary_turns_summarized", 0),
+            "_popped_turns_pending_summary": getattr(agent, "_popped_turns_pending_summary", [])
         }
-        with open(hist_tmp, "w", encoding="utf-8") as f:
+        with open(hist_path, "w", encoding="utf-8") as f:
             json.dump(hist_data, f, ensure_ascii=False, indent=2, default=str)
-        pending_replacements.append((hist_tmp, hist_path))
+            
+    # 3. Perform atomic directory swap
+    old_save_dir = os.path.join(parent_dir, save_dir_name + ".old")
+    if os.path.exists(old_save_dir):
+        try:
+            shutil.rmtree(old_save_dir)
+        except OSError:
+            pass
 
-    for tmp_path, final_path in pending_replacements:
-        os.replace(tmp_path, final_path)
+    moved_old = False
+    if os.path.exists(final_save_dir):
+        moved_old = _move_or_copy_tree(final_save_dir, old_save_dir, require_src_removed=True)
+        if not moved_old:
+            raise RuntimeError(f"Failed to stage existing save directory {final_save_dir} -> {old_save_dir}")
+
+    moved_new = _move_or_copy_tree(tmp_save_dir, final_save_dir)
+    if not moved_new:
+        if moved_old and not os.path.exists(final_save_dir):
+            _move_or_copy_tree(old_save_dir, final_save_dir)
+        raise RuntimeError(f"Failed to promote save directory {tmp_save_dir} -> {final_save_dir}")
+
+    # 4. Clean up old_save_dir only after the new save is safely in place.
+    if os.path.exists(old_save_dir):
+        try:
+            shutil.rmtree(old_save_dir)
+        except OSError:
+            pass
+
+
+def _heal_save_dir(path: str) -> None:
+    import shutil
+    final_save_dir = os.path.dirname(os.path.abspath(path))
+    parent_dir = os.path.dirname(final_save_dir)
+    save_dir_name = os.path.basename(final_save_dir)
+    
+    tmp_save_dir = os.path.join(parent_dir, save_dir_name + ".tmp")
+    old_save_dir = os.path.join(parent_dir, save_dir_name + ".old")
+    
+    if os.path.exists(final_save_dir):
+        return
+
+    if _move_or_copy_tree(tmp_save_dir, final_save_dir):
+        return
+
+    if _move_or_copy_tree(old_save_dir, final_save_dir):
+        return
+
+    if os.path.exists(old_save_dir):
+        try:
+            shutil.copytree(old_save_dir, final_save_dir)
+        except OSError:
+            pass
 
 
 def load_world(path: str = "saves/world.json") -> WorldState:
+    _heal_save_dir(path)
     payload = _load_json_with_tmp_fallback(path)
     world = world_from_dict(payload)
 
@@ -194,9 +280,11 @@ def load_world(path: str = "saves/world.json") -> WorldState:
             agent.chat_history = hist_data.get("chat_history", [])
             agent.summary_text = hist_data.get("summary_text", "")
             agent.summary_turns_summarized = hist_data.get("summary_turns_summarized", 0)
+            agent._popped_turns_pending_summary = hist_data.get("_popped_turns_pending_summary", [])
                 
     return world
 
 
 def save_exists(path: str = "saves/world.json") -> bool:
+    _heal_save_dir(path)
     return os.path.exists(path)

@@ -78,7 +78,7 @@
     {
       "name": "do_hobby",
       "description": "Use a proper hobby item like Book, Art Supplies, or Notebook to reduce stress.",
-      "params": ["item"]
+      "params": ["item", "description"]
     },
     {
       "name": "give_item",
@@ -87,7 +87,7 @@
     },
     {
       "name": "give_money",
-      "description": "Transfer money by bank transfer. No proximity required. Ignores busy/sleeping. Only fails if the sender has insufficient funds. On insufficient funds, both sender and recipient are notified.",
+      "description": "Transfer money by bank transfer. No proximity required. Ignores busy/sleeping. Only fails if the recipient is not found/alive or if the sender has insufficient funds. On insufficient funds, only the sender is notified.",
       "params": ["person", "amount"]
     },
     {

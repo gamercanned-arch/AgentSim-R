@@ -183,7 +183,7 @@ def handle_give_item(agent, world, args: dict):
                 "created_at": float(world.sim_time),
                 "x": float(agent.x),
                 "y": float(agent.y),
-                "z": 0.0, 
+                "z": float(agent.z), 
             }
         )
         _enqueue_missed_interaction(
@@ -302,6 +302,18 @@ def handle_change_status(agent, world, args: dict):
             agent.failed_calls += 1
             return f"{target.name} is currently {reason} (unavailable).", False, 60
             
+        target_key = normalize_label(target.name)
+        if agent.pending_status_requests.get(target_key) == rel_type:
+            agent.pending_status_requests.pop(target_key, None)
+            agent.relationships_status = rel_type
+            target.relationships_status = rel_type
+            agent.relationship_partner = target.name
+            target.relationship_partner = agent.name
+            
+            from python.scheduler import _apply_interruption_rollback
+            _apply_interruption_rollback(target, world)
+            return f"Accepted status change to '{rel_type}' with {target.name}.", True, 30
+
         if not hasattr(target, "_status_cooldowns"):
             target._status_cooldowns = {}
         requester_key = normalize_label(agent.name)

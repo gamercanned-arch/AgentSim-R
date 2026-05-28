@@ -81,6 +81,8 @@ class RawLLMResponse:
     model: str
     content: str
     reasoning: str = ""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
 
 class APIKeyRing:
@@ -137,11 +139,24 @@ class LLMRouter:
         self.max_output_tokens = int(max_output_tokens)
         self.mode = mode
         self.openrouter_headers = openrouter_headers or {}
+        self.token_usage_registry = {}
+        self.gemini_tpm_limit = int(os.environ.get("GEMINI_TPM_LIMIT", "220000").strip())
+        self.gemini_calls = []
 
         self.gemini_keys = APIKeyRing(self._load_keys("GEMINI_API_KEY"))
         self.last_raw: Dict[int, Dict[str, str]] = {}
-        self.quota: Optional['QuotaManager'] = None
         self._clients: Dict[str, genai.Client] = {}
+
+        n_keys = len(self.gemini_keys.keys)
+        if n_keys > 0:
+            from python.quota import QuotaManager
+            initial_models = []
+            for cfg in provider_configs.values():
+                if cfg.models:
+                    initial_models.extend(cfg.models)
+            self.quota = QuotaManager(n_keys, list(set(initial_models)))
+        else:
+            self.quota = None
 
     def set_quota(self, quota: 'QuotaManager'):
         self.quota = quota
@@ -171,6 +186,30 @@ class LLMRouter:
     def get_last_raw(self, agent_id: int) -> Dict[str, str]:
         return dict(self.last_raw.get(int(agent_id), {}) or {})
 
+    def get_context_limit(self) -> int:
+        has_gemma = False
+        for provider_cfg in self.provider_configs.values():
+            for model in provider_cfg.models:
+                if "gemma" in model.lower():
+                    has_gemma = True
+                    break
+        return 120000 if has_gemma else 1000000
+
+    def _wait_for_tpm_limit(self, prompt_tokens: int, max_tokens: int):
+        import time
+        needed = prompt_tokens + max_tokens
+        if needed > self.gemini_tpm_limit:
+            needed = self.gemini_tpm_limit
+        
+        while True:
+            now = time.time()
+            self.gemini_calls = [c for c in self.gemini_calls if now - c[0] < 60.0]
+            current_sum = sum(c[1] for c in self.gemini_calls)
+            if current_sum + needed <= self.gemini_tpm_limit:
+                self.gemini_calls.append((now, needed))
+                break
+            time.sleep(0.5)
+
     def _provider_sequence(self) -> List[str]:
         if self.mode == "random_provider":
             seq = list(self.provider_order)
@@ -192,8 +231,6 @@ class LLMRouter:
         msgs = self._inject_tools_into_system(messages)
         msgs = _sanitize_provider_messages(msgs)
 
-        prompt_tokens = _approx_tokens_from_messages(msgs)
-
         raw = self._route_call_rich(msgs, provider=None, model=None, agent_id=agent_id)
         self.last_raw[int(agent_id)] = {
             "provider": raw.provider,
@@ -203,8 +240,7 @@ class LLMRouter:
         }
 
         processed = _normalize_assistant_output_xml(raw.content)
-        gen_tokens = max(1, len(processed) // CHARS_PER_TOKEN)
-        return processed, prompt_tokens, gen_tokens
+        return processed, raw.prompt_tokens, raw.completion_tokens
 
     def call_specific_raw(
         self,
@@ -285,7 +321,8 @@ class LLMRouter:
 
         max_tokens = int(cfg.max_output_tokens or self.max_output_tokens)
         
-        system_msg = next((m["content"] for m in messages if m["role"] == "system"), "")
+        system_msgs = [m["content"] for m in messages if m["role"] == "system"]
+        system_msg = "\n\n".join(system_msgs) if system_msgs else ""
         chat_msgs = [m for m in messages if m["role"] != "system"]
 
         is_gemma = "gemma" in model.lower()
@@ -321,58 +358,112 @@ class LLMRouter:
             max_output_tokens=max_tokens,
         )
 
-        # Pin this worker strictly to a dedicated API key
-        key_idx = (agent_id - 1) % len(self.gemini_keys.keys) if agent_id is not None else 0
-        k = self.gemini_keys.keys[key_idx]
+        n_keys = len(self.gemini_keys.keys)
+        preferred_idx = (agent_id - 1) % n_keys if agent_id is not None else 0
+        attempts = 0
         backoff = 5.0
 
+        est_prompt = _approx_tokens_from_messages(messages)
+        self._wait_for_tpm_limit(est_prompt, max_tokens)
+        reserved_added = True
+
         while True:
-            # Check daily quota for this worker's isolated key
-            if self.quota and not self.quota.has_daily_quota(key_idx, model):
+            # Check if all keys are out of daily quota
+            if self.quota and not self.quota.any_key_has_quota(model):
+                if reserved_added and self.gemini_calls:
+                    self.gemini_calls.pop()
+                    reserved_added = False
                 self.quota.wait_until_quota_reset()
+                if not reserved_added:
+                    self._wait_for_tpm_limit(est_prompt, max_tokens)
+                    reserved_added = True
                 continue
 
-            for _retry in range(2):
+            current_key_idx = (preferred_idx + attempts) % n_keys
+            if self.quota and not self.quota.has_daily_quota(current_key_idx, model):
+                # Try the next key since this key is out of daily quota
+                attempts += 1
+                if attempts > 3 * n_keys:
+                    time.sleep(1.0)
+                continue
+
+            k = self.gemini_keys.keys[current_key_idx]
+
+            if self.quota:
+                self.quota.wait_for_rpm_slot(current_key_idx, model)
+
+            try:
+                if k not in self._clients:
+                    self._clients[k] = genai.Client(api_key=k)
+                client = self._clients[k]
+                
+                response = client.models.generate_content(
+                    model=model,
+                    contents=merged_contents,
+                    config=genai_config
+                )
+                # Record quota after successful request
                 if self.quota:
-                    self.quota.wait_for_rpm_slot(key_idx, model)
+                    self.quota.record_request(current_key_idx, model)
+                
+                # Safe response text extraction
+                content = ""
+                if response.candidates:
+                    candidate = response.candidates[0]
+                    if candidate.content and candidate.content.parts:
+                        content = candidate.content.parts[0].text or ""
 
-                try:
-                    if k not in self._clients:
-                        self._clients[k] = genai.Client(api_key=k)
-                    client = self._clients[k]
-                    
-                    response = client.models.generate_content(
-                        model=model,
-                        contents=merged_contents,
-                        config=genai_config
-                    )
-                    # Record quota after successful request
-                    if self.quota:
-                        self.quota.record_request(key_idx, model)
-                    
-                    # Safe response text extraction
-                    content = ""
-                    if response.candidates:
-                        candidate = response.candidates[0]
-                        if candidate.content and candidate.content.parts:
-                            content = candidate.content.parts[0].text or ""
-                    return RawLLMResponse(provider="gemini", model=model, content=content, reasoning="")
-                except Exception as e:
-                    if isinstance(e, ValueError):
-                        # safety block: return empty response
-                        return RawLLMResponse(provider="gemini", model=model, content="", reasoning="")
-                    
-                    # Record quota for errors that likely reached Google (HTTP 4xx/5xx)
-                    if self.quota:
-                        self.quota.record_request(key_idx, model)
-                    err_str = str(e)
-                    print(f"    [API ERROR] {err_str[:150]}... on pinned key {key_idx+1}. Retrying on same key. Backoff {backoff:.0f}s")
-                    time.sleep(backoff)
-                    backoff = min(60.0, backoff * 2)
-                    continue
+                # Extract actual token counts
+                prompt_tokens = 0
+                completion_tokens = 0
+                if response.usage_metadata:
+                    prompt_tokens = response.usage_metadata.prompt_token_count or 0
+                    completion_tokens = response.usage_metadata.candidates_token_count or 0
 
-            # If both retries failed, raise error for this worker
-            raise RuntimeError(f"Worker {agent_id} dedicated key failed after retries.")
+                actual_total = prompt_tokens + completion_tokens
+                if reserved_added and self.gemini_calls:
+                    self.gemini_calls[-1] = (self.gemini_calls[-1][0], actual_total)
+
+                # Update token registry
+                if model not in self.token_usage_registry:
+                    self.token_usage_registry[model] = {"prompt": 0, "completion": 0, "total": 0}
+                self.token_usage_registry[model]["prompt"] += prompt_tokens
+                self.token_usage_registry[model]["completion"] += completion_tokens
+                self.token_usage_registry[model]["total"] += actual_total
+
+                return RawLLMResponse(
+                    provider="gemini",
+                    model=model,
+                    content=content,
+                    reasoning="",
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                )
+            except Exception as e:
+                if reserved_added and self.gemini_calls:
+                    self.gemini_calls.pop()
+                    reserved_added = False
+
+                if isinstance(e, ValueError):
+                    # safety block: return empty response
+                    return RawLLMResponse(provider="gemini", model=model, content="", reasoning="")
+                
+                # Record quota for errors that likely reached Google (HTTP 4xx/5xx)
+                if self.quota:
+                    self.quota.record_request(current_key_idx, model)
+                err_str = str(e)
+                print(f"    [API ERROR] {err_str[:150]}... on key {current_key_idx+1}. Rotating key. Backoff {backoff:.0f}s")
+                time.sleep(backoff)
+                backoff = min(60.0, backoff * 2)
+                
+                attempts += 1
+                if attempts >= n_keys * 3:
+                    raise RuntimeError(f"Worker {agent_id} all gemini keys failed after {attempts} rotating attempts. Last error: {err_str}")
+                
+                if not reserved_added:
+                    self._wait_for_tpm_limit(est_prompt, max_tokens)
+                    reserved_added = True
+                continue
 
 
 class Summarizer:
@@ -398,6 +489,7 @@ class Summarizer:
         temperature: float = 0.8,
         top_p: float = 0.8,
         system_prompt: str | None = None,
+        user_prompt_template: str | None = None,
         **kwargs
     ):
         self.router = router
@@ -407,22 +499,40 @@ class Summarizer:
         self.temperature = float(temperature)
         self.top_p = float(top_p)
         self.system_prompt = (system_prompt or self.DEFAULT_SYSTEM_PROMPT).strip()
+        self.user_prompt_template = user_prompt_template
+        self.max_retries = kwargs.get("max_retries", None)
 
     def summarize(self, existing_summary: str, prompt_text: str, agent_id: Optional[int] = None) -> str:
-        if existing_summary.strip():
-            user_msg = (
-                f"EXISTING FIRST-PERSON SUMMARY:\n{existing_summary}\n\n"
-                f"NEW LOG EVENTS TO INTEGRATE:\n{prompt_text}\n\n"
-                f"Task: Update and rewrite the existing first-person summary to integrate the new events. "
-                f"Keep it in first-person. Ensure the summary starts with "
-                f"'[THIS IS A SUMMARY OF WHAT YOU HAVE DONE TILL NOW]'."
-            )
+        if self.user_prompt_template:
+            try:
+                user_msg = self.user_prompt_template.format(
+                    existing_summary=existing_summary,
+                    text_chunk=prompt_text,
+                    prompt_text=prompt_text
+                )
+            except Exception:
+                user_msg = self.user_prompt_template.replace(
+                    "{existing_summary}", existing_summary
+                ).replace(
+                    "{text_chunk}", prompt_text
+                ).replace(
+                    "{prompt_text}", prompt_text
+                )
         else:
-            user_msg = (
-                f"LOG EVENTS TO SUMMARIZE:\n{prompt_text}\n\n"
-                f"Task: Create a first-person summary of these events focusing on long-term activities. "
-                f"The summary MUST start with '[THIS IS A SUMMARY OF WHAT YOU HAVE DONE TILL NOW]'."
-            )
+            if existing_summary.strip():
+                user_msg = (
+                    f"EXISTING FIRST-PERSON SUMMARY:\n{existing_summary}\n\n"
+                    f"NEW LOG EVENTS TO INTEGRATE:\n{prompt_text}\n\n"
+                    f"Task: Update and rewrite the existing first-person summary to integrate the new events. "
+                    f"Keep it in first-person. Ensure the summary starts with "
+                    f"'[THIS IS A SUMMARY OF WHAT YOU HAVE DONE TILL NOW]'."
+                )
+            else:
+                user_msg = (
+                    f"LOG EVENTS TO SUMMARIZE:\n{prompt_text}\n\n"
+                    f"Task: Create a first-person summary of these events focusing on long-term activities. "
+                    f"The summary MUST start with '[THIS IS A SUMMARY OF WHAT YOU HAVE DONE TILL NOW]'."
+                )
 
         messages = [
             {"role": "system", "content": self.system_prompt},

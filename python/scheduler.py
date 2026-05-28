@@ -310,7 +310,13 @@ def _pop_oldest_turn(agent) -> bool:
     end = start + 1
     while end < len(agent.chat_history) and agent.chat_history[end].get("role") != "user":
         end += 1
-    # Remove [0, end) in one O(n) slice instead of multiple O(n) pops
+    
+    # Store popped messages in the staging list
+    popped = agent.chat_history[:end]
+    if not hasattr(agent, "_popped_turns_pending_summary") or agent._popped_turns_pending_summary is None:
+        agent._popped_turns_pending_summary = []
+    agent._popped_turns_pending_summary.extend(popped)
+    
     agent.chat_history = agent.chat_history[end:]
     return True
 
@@ -363,10 +369,7 @@ def _build_trimmed_messages(agent, world, notifications_text: str, context_limit
 
         msgs = build_messages(agent.id, world, notifications_text)
         prompt_text = render_prompt(msgs)
-        estimated_tokens = min(
-            estimate_prompt_tokens(msgs, prompt_text=prompt_text),
-            context_limit - MAX_NEW_TOKENS - 10
-        )
+        estimated_tokens = estimate_prompt_tokens(msgs, prompt_text=prompt_text)
 
     return msgs, prompt_text, estimated_tokens
 
@@ -396,6 +399,11 @@ def _get_raw_llm_fields(agent_id: int, processed: str) -> tuple[str, str, str, s
     return raw_provider, raw_model, raw_content, raw_reasoning
 
 def run_tick(world) -> None:
+    # Synchronize all agents' states to world.sim_time at the start of run_tick
+    for a in world.agents.values():
+        _ensure_agent_schema(a)
+        _refresh_agent_activity(a, world.sim_time)
+
     while True:
         alive_agents = [a for a in world.agents.values() if a.alive]
         if not alive_agents:
@@ -405,6 +413,10 @@ def run_tick(world) -> None:
         if agent.busy_until > world.sim_time:
             world.sim_time = agent.busy_until
             _advance_market_to(world, world.sim_time)
+            # Synchronize all agents' states when world.sim_time advances
+            for a in world.agents.values():
+                _ensure_agent_schema(a)
+                _refresh_agent_activity(a, world.sim_time)
         while world.sim_time - world.last_passive >= PASSIVE_TICK_SECONDS:
             world.last_passive += PASSIVE_TICK_SECONDS
             _advance_market_to(world, world.last_passive)
@@ -444,6 +456,11 @@ def run_tick(world) -> None:
         ) + f"(Queued notifications remaining: {remaining_count})"
         
     context_limit = int(CONTEXT_SIZE * CONTEXT_FILL_RATIO)
+    if hasattr(call_server, "get_context_limit"):
+        raw_limit = call_server.get_context_limit()
+        if hasattr(call_server, "gemini_tpm_limit") and raw_limit > 120000:
+            raw_limit = min(raw_limit, call_server.gemini_tpm_limit)
+        context_limit = int(raw_limit * CONTEXT_FILL_RATIO)
     msgs, prompt_text, estimated_tokens = _build_trimmed_messages(
         agent, world, notifications_text, context_limit
     )
@@ -470,7 +487,7 @@ def run_tick(world) -> None:
         world.sim_time = agent.busy_until
         return
         
-    pre_state = snapshot_agent(agent)
+    pre_state = snapshot_agent(agent, None)
 
     try:
         processed_out, prompt_tokens, gen_tokens = call_server(
@@ -526,7 +543,10 @@ def run_tick(world) -> None:
             agent.busy_until = max(agent.busy_until, world.sim_time + 300)
         
     _refresh_agent_activity(agent, world.sim_time)
-    post_state = snapshot_agent(agent)
+    if hasattr(call_server, "token_usage_registry"):
+        from copy import deepcopy
+        world.token_usage = deepcopy(call_server.token_usage_registry)
+    post_state = snapshot_agent(agent, world.token_usage)
     log_turn(
         agent=agent,
         sim_time=world.sim_time,
@@ -555,6 +575,39 @@ def _refresh_agent_activity(agent, current_time: float) -> None:
     if not agent.alive:
         agent.current_activity = "dead"
         return
+
+    # Check and interpolate transit first
+    if hasattr(agent, "_transit_meta"):
+        meta = agent._transit_meta
+        start_xyz = meta["start_xyz"]
+        end_xyz = meta["end_xyz"]
+        total_time = float(meta["total_time"])
+        start_time = float(meta["start_time"])
+        
+        elapsed = current_time - start_time
+        fraction = min(1.0, max(0.0, elapsed / total_time)) if total_time > 0 else 1.0
+        
+        agent.x = round(start_xyz[0] + fraction * (end_xyz[0] - start_xyz[0]), 2)
+        agent.y = round(start_xyz[1] + fraction * (end_xyz[1] - start_xyz[1]), 2)
+        agent.z = round(start_xyz[2] + fraction * (end_xyz[2] - start_xyz[2]), 2)
+        
+        if meta.get("mode") == "vehicle":
+            agent.vehicle_x, agent.vehicle_y, agent.vehicle_z = agent.x, agent.y, agent.z
+            
+        if fraction < 1.0:
+            agent.location = "moving"
+            agent.current_activity = "moving"
+        else:
+            agent.x, agent.y, agent.z = float(end_xyz[0]), float(end_xyz[1]), float(end_xyz[2])
+            if meta.get("mode") == "vehicle":
+                agent.vehicle_x, agent.vehicle_y, agent.vehicle_z = agent.x, agent.y, agent.z
+            target_loc = meta.get("target_location", "Outside")
+            agent.location = f"Outside {target_loc}" if meta.get("has_roof") else target_loc
+            if hasattr(agent, "_transit_meta"):
+                delattr(agent, "_transit_meta")
+            if agent.current_activity == "moving":
+                agent.current_activity = "idle"
+
     if agent.is_sleeping and current_time >= agent.busy_until:
         sleep_duration_hours = max(
             0.0,
@@ -579,11 +632,9 @@ def _refresh_agent_activity(agent, current_time: float) -> None:
         and agent.task_state == "idle"
         and agent.busy_until <= current_time
         and agent.current_activity != "dead"
+        and not hasattr(agent, "_transit_meta")
     ):
         agent.current_activity = "idle"
-        
-        if hasattr(agent, "_transit_meta"):
-            delattr(agent, "_transit_meta")
         if hasattr(agent, "_work_meta"):
             delattr(agent, "_work_meta")
 
@@ -951,7 +1002,13 @@ def _apply_interruption_rollback(agent, world) -> None:
         agent.x = sx + (ex - sx) * ratio
         agent.y = sy + (ey - sy) * ratio
         agent.z = sz + (ez - sz) * ratio
-        agent.location = "Outside"
+        
+        from python.locations import get_current_location_def
+        loc = get_current_location_def(agent.x, agent.y, agent.z)
+        if loc:
+            agent.location = f"Outside {loc.name}" if loc.has_roof else loc.name
+        else:
+            agent.location = "Outside"
         
         agent.energy = min(100.0, agent.energy + meta["energy_cost"] * (1.0 - ratio))
         if meta["fuel_cost"] > 0:
@@ -980,9 +1037,17 @@ def _apply_interruption_rollback(agent, world) -> None:
         agent.hourly_wage = max(0.0, agent.hourly_wage - meta.get("wage_gain", 0.0) * unearned_ratio)
         agent.energy = min(100.0, agent.energy + meta.get("energy_spent", 0.0) * unearned_ratio)
 
+        # Tuition refund proration!
+        if meta.get("tuition_paid", 0.0) > 0.0:
+            tuition_refund = meta.get("tuition_paid", 0.0) * unearned_ratio
+            agent.money += tuition_refund
+            # Roll back the expense tracking for unearned tuition
+            agent.expenses = max(0.0, agent.expenses - tuition_refund)
+            agent.total_expenses = max(0.0, agent.total_expenses - tuition_refund)
+
         if getattr(agent, "task_state", "idle") != "idle":
             from python.tooling.handlers.workstudy import _clear_task_state
-            _clear_task_state(agent, world, current_time, reset_activity=False)
+            _clear_task_state(agent, world, current_time, reset_activity=False, refund=False)
 
         delattr(agent, "_work_meta")
         agent.current_activity = "idle"

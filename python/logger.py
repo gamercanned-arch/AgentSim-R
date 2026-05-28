@@ -95,7 +95,25 @@ def _extract_system_user(messages: list) -> tuple[str, str]:
     return system, last_user
 
 
-def snapshot_agent(agent) -> dict:
+def _get_new_messages_this_turn(messages: list, raw_output: str) -> list:
+    if not messages:
+        return [{"role": "assistant", "content": raw_output}]
+    
+    last_assistant_idx = -1
+    for idx, msg in enumerate(messages):
+        if msg.get("role") == "assistant":
+            last_assistant_idx = idx
+            
+    if last_assistant_idx == -1:
+        new_msgs = list(messages)
+    else:
+        new_msgs = list(messages[last_assistant_idx + 1:])
+        
+    new_msgs.append({"role": "assistant", "content": raw_output})
+    return new_msgs
+
+
+def snapshot_agent(agent, global_token_usage: dict | None = None) -> dict:
     def num(name: str, default: float = 0.0) -> float:
         try:
             return round(float(getattr(agent, name, default)), 2)
@@ -104,6 +122,7 @@ def snapshot_agent(agent) -> dict:
 
     return {
         "id": getattr(agent, "id", None),
+        "global_token_usage": deepcopy(global_token_usage) if global_token_usage else {},
         "name": getattr(agent, "name", ""),
         "alive": bool(getattr(agent, "alive", False)),
         "age": getattr(agent, "age", 0),
@@ -215,11 +234,7 @@ def log_turn(
         "post_state": post_state,
     }
 
-    if LOG_FULL_MESSAGES:
-        entry["input_messages"] = messages
-    else:
-        entry["input_messages_summary"] = _summarize_messages(messages)
-
+    entry["turn_messages"] = _get_new_messages_this_turn(messages, raw_output)
     log_agent(agent.id, entry)
 
 
@@ -258,10 +273,7 @@ def log_io(
         else raw_output,
     }
 
-    if LOG_FULL_MESSAGES:
-        io_entry["input_prompt"] = messages
-    else:
-        io_entry["input_prompt_summary"] = _summarize_messages(messages)
+    io_entry["turn_messages"] = _get_new_messages_this_turn(messages, raw_output)
 
     _write(os.path.join(LOG_DIR, "global_io_dataset.jsonl"), io_entry)
 

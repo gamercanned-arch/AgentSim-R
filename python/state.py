@@ -62,6 +62,7 @@ class AgentState:
     chat_history: List[Dict[str, str]] = field(default_factory=list)
     last_action_result: str = "None (First turn)"
     last_parse_error: bool = False
+    _popped_turns_pending_summary: List[Dict[str, str]] = field(default_factory=list)
 class WorldState:
     """
     WorldState is not a dataclass because it requires custom initialization logic
@@ -83,7 +84,8 @@ class WorldState:
         self.vacant_home_lots: Dict[str, List[str]] = get_home_lots_inventory()
         self.ground_items: List[Dict[str, Any]] = []
         self.corpse_estates: List[Dict[str, Any]] = []
-        self.pending_deliveries: List[Dict[str, Any]] =[]
+        self.pending_deliveries: List[Dict[str, Any]] = []
+        self.token_usage: Dict[str, Dict[str, int]] = {}
     def allocate_home_lot(self, home_type: str, require_floor1: bool = False) -> Optional[str]:
         available = self.vacant_home_lots.get(home_type,[])
         if not available:

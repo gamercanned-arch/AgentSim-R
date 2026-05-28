@@ -132,17 +132,15 @@ def seconds_until_close(loc, sim_time: float) -> float:
 
 
 def is_unavailable(target_agent, sim_time: float) -> bool:
-    """True only when the agent is dead, sleeping, or in an active work/study task.
+    """True only when the agent is dead or sleeping.
 
     Brief cooldowns (busy_until > sim_time from normal actions like eating,
-    talking, walking) do NOT count — the agent is reachable for social
-    interactions during those windows.
+    talking, walking) and active tasks (working, studying) do NOT block
+    social interactions (they trigger interruption and rollback logic).
     """
     if not target_agent.alive:
         return True
     if target_agent.is_sleeping:
-        return True
-    if target_agent.task_state != "idle":
         return True
     return False
 

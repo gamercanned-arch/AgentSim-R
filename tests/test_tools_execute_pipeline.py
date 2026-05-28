@@ -86,6 +86,9 @@ def test_move_to_success_and_sets_outside_for_roofed_place():
     res, suc, cost = _exec(w, a, tool_xml("move_to", place="Library"))
     assert suc is True
     assert cost >= 60
+    assert a.location == "moving"
+    from python.scheduler import _refresh_agent_activity
+    _refresh_agent_activity(a, w.sim_time + cost)
     assert a.location == "Outside Library"
     assert "Travelled to entrance area" in res
 
@@ -93,8 +96,11 @@ def test_move_to_success_and_sets_outside_for_roofed_place():
 def test_move_to_open_air_sets_named_location():
     w = _mk_world()
     a = _add_agent(w, 0, "Alice")
-    res, suc, _ = _exec(w, a, tool_xml("move_to", place="Park_Central"))
+    res, suc, cost = _exec(w, a, tool_xml("move_to", place="Park_Central"))
     assert suc is True
+    assert a.location == "moving"
+    from python.scheduler import _refresh_agent_activity
+    _refresh_agent_activity(a, w.sim_time + cost)
     assert a.location == "Park_Central"
 
 

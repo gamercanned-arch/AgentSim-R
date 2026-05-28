@@ -257,3 +257,23 @@ def test_change_status_sleeping_target_fails_and_does_not_queue(temp_logs, monke
 
     python.scheduler.run_tick(w)
     assert b.pending_status_requests.get("alice") is None
+
+
+def test_change_status_accepts_pending_request_and_updates_both_agents():
+    from python.tooling.handlers.social import handle_change_status
+
+    w, a, b = make_world_two_agents()
+    b.pending_status_requests["alice"] = "dating"
+
+    res, suc, cost = handle_change_status(
+        b, w, {"person": "Alice", "type": "dating", "value": ""}
+    )
+
+    assert suc is True
+    assert cost == 30
+    assert "Accepted status change" in res
+    assert b.pending_status_requests.get("alice") is None
+    assert a.relationships_status == "dating"
+    assert b.relationships_status == "dating"
+    assert a.relationship_partner == "Bob"
+    assert b.relationship_partner == "Alice"

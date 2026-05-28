@@ -256,9 +256,8 @@ HOME_LOTS_BY_TYPE: Dict[str, List[str]] = {
     "Luxury House": [],
 }
 
-def _home_interactables(home_type: str, floor: int = 0) -> List[Dict]:
-    # FIX 8: Ground-floor-only simulation requires all home objects at Z=0.0
-    z_pos = 0.0
+def _home_interactables(home_type: str, floor: float = 0.0) -> List[Dict]:
+    z_pos = float(floor)
     if home_type == "Small Apartment":
         return [
             {"name": "Bed", "z": z_pos},
@@ -295,8 +294,8 @@ def _register_home_lot(
     x_max: float,
     y_min: float,
     y_max: float,
-    z_min: float,  # Ignored, forced to 0.0 below to prevent floating bug
-    z_max: float,  # Ignored, forced to 10.0 below
+    z_min: float,
+    z_max: float,
     floor: int,
     entrance_x: float,
     entrance_y: float,
@@ -314,15 +313,15 @@ def _register_home_lot(
         x_max=x_max,
         y_min=y_min,
         y_max=y_max,
-        z_min=0.0,    # FIX: Forced to ground floor
-        z_max=10.0,   # FIX: Forced to ground floor bounds
+        z_min=z_min,
+        z_max=z_max,
         has_roof=True,
         open_time=0.0,
         close_time=24.0,
-        interactables=_home_interactables(home_type, 0), # FIX: Z forced to 0
+        interactables=_home_interactables(home_type, z_min),
         entrance_x=entrance_x,
         entrance_y=entrance_y,
-        entrance_z=0.0, # FIX: Entrance Z forced to 0
+        entrance_z=entrance_z,
     )
 
 HOME_LOCATIONS_3D: List[LocationDef] = []

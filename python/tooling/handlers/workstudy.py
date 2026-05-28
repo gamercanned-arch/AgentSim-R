@@ -30,22 +30,24 @@ def _task_failure(agent, world, message: str, cost: int = 60) -> Tuple[str, bool
         return (msg, False, cost)
     return (f"{message} Failed attempts in this task: {task_failures}/3.", False, cost)
 
-def _clear_task_state(agent, world, current_time: float, reset_activity: bool = True) -> None:
+def _clear_task_state(agent, world, current_time: float, reset_activity: bool = True, refund: bool = True) -> None:
     if agent.task_state != "idle":
-        spent = agent.pending_task_data.get("energy_spent", 0.0)
-        start = agent.pending_task_data.get("start_time", current_time)
-        elapsed_hours = max(0.0, (current_time - start) / 3600.0)
-        energy_used = elapsed_hours * 10.0
-        refund = max(0.0, spent - energy_used)
-        agent.energy = min(100.0, agent.energy + refund)
-        
-        if agent.pending_task_data.get("type") == "get_education":
-            tuition_paid = agent.pending_task_data.get("tuition_paid", 0.0)
-            if tuition_paid > 0:
-                ratio = min(1.0, elapsed_hours / max(0.1, float(agent.pending_task_data.get("hours", 1.0))))
-                t_refund = tuition_paid * (1.0 - ratio)
-                agent.money += t_refund
-                
+        if refund:
+            spent = agent.pending_task_data.get("energy_spent", 0.0)
+            start = agent.pending_task_data.get("start_time", current_time)
+            elapsed_hours = max(0.0, (current_time - start) / 3600.0)
+            energy_used = elapsed_hours * 10.0
+            refund_val = max(0.0, spent - energy_used)
+            agent.energy = min(100.0, agent.energy + refund_val)
+            
+            if agent.pending_task_data.get("type") == "get_education":
+                tuition_paid = agent.pending_task_data.get("tuition_paid", 0.0)
+                if tuition_paid > 0:
+                    ratio = min(1.0, elapsed_hours / max(0.1, float(agent.pending_task_data.get("hours", 1.0))))
+                    t_refund = tuition_paid * (1.0 - ratio)
+                    agent.money += t_refund
+                    agent.expenses = max(0.0, agent.expenses - t_refund)
+                    agent.total_expenses = max(0.0, agent.total_expenses - t_refund)
     if agent.currently_holding and agent.currently_holding.get("id") == "job_prop":
         agent.currently_holding = None
     agent.task_state = "idle"
@@ -316,7 +318,7 @@ def handle_interact_with(agent, world, args: dict):
             agent.currently_holding = None
             
         busy_activity = "studying" if data.get("type") == "get_education" else "working"
-        _clear_task_state(agent, world, world.sim_time, reset_activity=False)
+        _clear_task_state(agent, world, world.sim_time, reset_activity=False, refund=False)
         agent.current_activity = busy_activity
         
         hours = float(data.get("hours", 1.0))
@@ -335,7 +337,8 @@ def handle_interact_with(agent, world, args: dict):
                 "pay": 0.0,
                 "edu_gain": float(edu_gain),
                 "wage_gain": float(wage_gain),
-                "energy_spent": float(data.get("energy_spent", 0.0))
+                "energy_spent": float(data.get("energy_spent", 0.0)),
+                "tuition_paid": float(data.get("tuition_paid", 0.0))
             }
             
             return (

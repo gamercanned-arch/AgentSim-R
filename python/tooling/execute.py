@@ -83,7 +83,7 @@ FALLBACK_TOOL_SCHEMAS: Dict[str, set[str]] = {
     "buy_stock": {"shares"},
     "sell_stock": {"shares"},
     "sleep": {"hours"},
-    "do_hobby": {"item"},
+    "do_hobby": {"item", "description"},
     "give_item": {"person", "item"},
     "give_money": {"person", "amount"},
     "pick_item": {"item_name"},
@@ -116,7 +116,13 @@ def _validate_schema(name: str, args: dict) -> str | None:
         return f"Tool {name} not found."
 
     provided = set((args or {}).keys())
-    missing = [p for p in expected if p not in provided]
+    
+    # description is an optional parameter for do_hobby
+    optional_params = set()
+    if name == "do_hobby":
+        optional_params.add("description")
+
+    missing = [p for p in expected if p not in provided and p not in optional_params]
     if missing:
         return f"Missing required parameter(s) for {name}: {', '.join(sorted(missing))}."
 
@@ -169,6 +175,11 @@ def _execute_one(name: str, args: dict, agent, world) -> Tuple[str, bool, int]:
         return f"Tool {name} crashed: {type(e).__name__}: {e}", False, 60
 
 
+def get_agent_action_time(agent, world) -> float:
+    accum = getattr(agent, "_accumulated_turn_time", 0) or 0
+    return float(world.sim_time) + float(accum)
+
+
 def execute_tool_calls(tool_calls: List[dict], agent_id: int, world) -> Tuple[str, bool, int]:
     """
     Execute structured tool calls from API tool calling.
@@ -186,6 +197,7 @@ def execute_tool_calls(tool_calls: List[dict], agent_id: int, world) -> Tuple[st
         return "Agent inactive.", False, 0
 
     agent._last_api_tool_steps = []
+    agent._accumulated_turn_time = 0
 
     if not tool_calls:
         agent.failed_calls += 1
@@ -210,13 +222,13 @@ def execute_tool_calls(tool_calls: List[dict], agent_id: int, world) -> Tuple[st
 
         res, suc, cost = _execute_one(name, args, agent, world)
         all_success = all_success and suc
-        if suc:
-            total_cost += max(0, int(cost))
-        else:
-            total_cost += max(60, int(cost))
+        added_cost = max(0, int(cost)) if suc else max(60, int(cost))
+        total_cost += added_cost
 
         steps.append({"id": tid, "name": name, "args": args, "result": res, "success": bool(suc), "cost": int(cost)})
         step_results.append(f"{idx}. {name}: {'OK' if suc else 'FAIL'} - {res}")
+
+        agent._accumulated_turn_time += added_cost
 
     agent._last_api_tool_steps = steps
 
@@ -239,6 +251,7 @@ def execute_tool(tool_call_str: str, agent_id: int, world) -> Tuple[str, bool, i
         return "Agent inactive.", False, 0
 
     agent._last_api_tool_steps = []
+    agent._accumulated_turn_time = 0
 
     if parse_error:
         agent.last_parse_error = True
@@ -258,6 +271,8 @@ def execute_tool(tool_call_str: str, agent_id: int, world) -> Tuple[str, bool, i
     if len(calls) == 1:
         name, args = calls[0]
         res, suc, cost = _execute_one(name, args, agent, world)
+        added_cost = max(0, int(cost)) if suc else max(60, int(cost))
+        agent._accumulated_turn_time += added_cost
         agent._last_api_tool_steps = [{"id": new_id(), "name": name, "args": dict(args or {}), "result": res, "success": bool(suc), "cost": int(cost)}]
         return res, suc, cost
 
@@ -269,12 +284,11 @@ def execute_tool(tool_call_str: str, agent_id: int, world) -> Tuple[str, bool, i
     for idx, (name, args) in enumerate(calls, start=1):
         res, suc, cost = _execute_one(name, args, agent, world)
         all_success = all_success and suc
-        if suc:
-            total_cost += max(0, int(cost))
-        else:
-            total_cost += max(60, int(cost))
+        added_cost = max(0, int(cost)) if suc else max(60, int(cost))
+        total_cost += added_cost
         steps.append({"id": new_id(), "name": name, "args": dict(args or {}), "result": res, "success": bool(suc), "cost": int(cost)})
         step_results.append(f"{idx}. {name}: {'OK' if suc else 'FAIL'} - {res}")
+        agent._accumulated_turn_time += added_cost
 
     agent._last_api_tool_steps = steps
     return " | ".join(step_results), all_success, total_cost

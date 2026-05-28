@@ -2,7 +2,7 @@
 Rate-limit and daily-quota management for Google AI Studio API keys.
 
 Tracks per-key, per-model request counts with:
-- Sliding-window RPM enforcement (15 req/min)
+- Sliding-window RPM enforcement (model-specific, default 15 req/min)
 - Daily limit enforcement (model-specific)
 - Auto-pause + auto-resume at 1:30 PM IST when daily quota exhausted
 - Per-run request counter for observability
@@ -24,8 +24,19 @@ MODEL_DAILY_LIMITS = {
     "gemma-4-26b-a4b-it":          1500,   # alias
     "gemini-3.1-flash-lite":       500,
     "gemini-3.1-flash-lite-preview": 500,  # alias
+    "gemini-3-flash":              20,
+    "gemini-3-flash-preview":      20,     # alias
+    "gemini-3.5-flash":            20,
+    "gemini-2.5-flash":            20,
 }
 DEFAULT_DAILY_LIMIT = 500  # conservative fallback for unknown models
+
+MODEL_RPM_LIMITS = {
+    "gemini-3-flash":              5,
+    "gemini-3-flash-preview":      5,      # alias
+    "gemini-3.5-flash":            5,
+    "gemini-2.5-flash":            5,
+}
 DEFAULT_RPM = 15
 
 
@@ -75,7 +86,8 @@ class QuotaManager:
         for ki in range(n_keys):
             for model in models:
                 daily = MODEL_DAILY_LIMITS.get(model, DEFAULT_DAILY_LIMIT)
-                self._counters[(ki, model)] = _KeyModelCounter(daily, DEFAULT_RPM)
+                rpm = MODEL_RPM_LIMITS.get(model, DEFAULT_RPM)
+                self._counters[(ki, model)] = _KeyModelCounter(daily, rpm)
 
     def _current_reset_period(self) -> str:
         now_ist = datetime.now(IST)
@@ -98,7 +110,8 @@ class QuotaManager:
         key = (key_idx, model)
         if key not in self._counters:
             daily = MODEL_DAILY_LIMITS.get(model, DEFAULT_DAILY_LIMIT)
-            self._counters[key] = _KeyModelCounter(daily, DEFAULT_RPM)
+            rpm = MODEL_RPM_LIMITS.get(model, DEFAULT_RPM)
+            self._counters[key] = _KeyModelCounter(daily, rpm)
         return self._counters[key]
 
     def wait_for_rpm_slot(self, key_idx: int, model: str):

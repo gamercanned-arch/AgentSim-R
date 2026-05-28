@@ -3,6 +3,7 @@ import os
 import time
 
 from dotenv import load_dotenv
+load_dotenv(override=True)
 
 from python.bootstrap import build_starting_world
 from python.config import CACHE_DIR, LOG_DIR, MAX_RUNTIME_MINUTES, N_AGENTS

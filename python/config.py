@@ -1,10 +1,12 @@
 import os
+from dotenv import load_dotenv
+load_dotenv(override=True)
 
 N_AGENTS = 6
 # With stated server support, set to 262144.
-CONTEXT_SIZE = 262144
+CONTEXT_SIZE = 220000
 # Keeps generation bounded; tool calls should be short.
-MAX_NEW_TOKENS = 2048
+MAX_NEW_TOKENS = 16384
 PASSIVE_TICK_SECONDS = 3600.0
 RANDOM_SEED = 42
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

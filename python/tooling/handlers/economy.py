@@ -79,10 +79,10 @@ def handle_buy_item(agent, world, args: dict):
                 False,
                 60,
             )
-        new_home_location = world.allocate_home_lot(item, require_floor1=True)
+        new_home_location = world.allocate_home_lot(item, require_floor1=False)
         if not new_home_location:
             agent.failed_calls += 1
-            return f"No vacant {item} Floor 1 lots are currently available.", False, 60
+            return f"No vacant {item} lots are currently available.", False, 60
         if old_home_type and old_home_location:
             world.release_home_lot(old_home_type, old_home_location)
         agent.money += sell_price

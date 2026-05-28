@@ -472,6 +472,7 @@ class TestMoveToLocationString:
         monkeypatch.setattr(scheduler, "call_server", stub)
 
         scheduler.run_tick(w)
+        scheduler._refresh_agent_activity(a, a.busy_until)
 
         # Location should include the building name
         assert "Outside" in a.location or "Library" in a.location
@@ -490,6 +491,7 @@ class TestMoveToLocationString:
         monkeypatch.setattr(scheduler, "call_server", stub)
 
         scheduler.run_tick(w)
+        scheduler._refresh_agent_activity(a, a.busy_until)
 
         assert a.location == "Park_Central"
 
@@ -1007,3 +1009,503 @@ class TestMultiHourSimulation:
                 assert "<" not in entry["content"]
                 assert ">" not in entry["content"]
                 assert "\x00" not in entry["content"]
+
+
+class TestRateLimitsSummarizationAndTelemetry:
+    """Tests for dynamic context limits, rate-limit safety, memory robust summarization,
+    staged turn pending summary buffer, token usage tracking, and tuition proration."""
+
+    def test_dynamic_context_limits(self):
+        from python.api_llm import LLMRouter, ProviderConfig
+        
+        router_gemma = LLMRouter(
+            provider_configs={
+                "google": ProviderConfig(
+                    name="google",
+                    models=["gemma-2-9b-it"],
+                    max_output_tokens=2048,
+                )
+            },
+            provider_order=["google"],
+        )
+        assert router_gemma.get_context_limit() == 120000
+
+        router_gemini = LLMRouter(
+            provider_configs={
+                "google": ProviderConfig(
+                    name="google",
+                    models=["gemini-1.5-pro"],
+                    max_output_tokens=2048,
+                )
+            },
+            provider_order=["google"],
+        )
+        assert router_gemini.get_context_limit() == 1000000
+
+    def test_summarization_failure_no_wipe(self):
+        from run_api_sim import _maybe_summarize_agent
+        from python.state import AgentState, WorldState
+        
+        class FailingSummarizer:
+            def __init__(self):
+                self.calls = 0
+                self.max_retries = 1
+            def summarize(self, existing, chunk_text, agent_id):
+                self.calls += 1
+                raise Exception("API failure")
+                
+        w = WorldState()
+        a = AgentState(id=0, name="Alice", age=30)
+        # 100 turns, each has 2000 words (~1.5k tokens) to exceed 100k limit
+        for i in range(100):
+            a.chat_history.append({"role": "user", "content": "hello " * 1000})
+            a.chat_history.append({"role": "assistant", "content": "world " * 1000})
+            
+        original_len = len(a.chat_history)
+        summarizer = FailingSummarizer()
+        
+        class FakeRouter:
+            gemini_tpm_limit = 240000
+            def get_context_limit(self):
+                return 1000000
+        summarizer.router = FakeRouter()
+        
+        _maybe_summarize_agent(a, w, summarizer, lambda *args: [])
+        
+        assert summarizer.calls == 1
+        assert len(a.chat_history) == original_len
+
+    def test_popped_turns_staging_and_trimming_and_chunked_summarization(self):
+        from python.scheduler import _pop_oldest_turn
+        from run_api_sim import _build_messages_api_wrapper
+        from python.state import AgentState, WorldState
+        
+        w = WorldState()
+        a = AgentState(id=0, name="Alice", age=30)
+        a.chat_history = [
+            {"role": "user", "content": "message 1"},
+            {"role": "assistant", "content": "reply 1"},
+            {"role": "user", "content": "message 2"},
+            {"role": "assistant", "content": "reply 2"},
+        ]
+        
+        res = _pop_oldest_turn(a)
+        assert res is True
+        assert len(a._popped_turns_pending_summary) == 2
+        assert a._popped_turns_pending_summary[0]["content"] == "message 1"
+        assert a._popped_turns_pending_summary[1]["content"] == "reply 1"
+        assert len(a.chat_history) == 2
+        assert a.chat_history[0]["content"] == "message 2"
+
+        # Test trimming to 50 turns
+        a._popped_turns_pending_summary = []
+        for i in range(60):
+            a._popped_turns_pending_summary.extend([
+                {"role": "user", "content": f"user {i}"},
+                {"role": "assistant", "content": f"assistant {i}"}
+            ])
+            
+        class CountingSummarizer:
+            def __init__(self):
+                self.summaries = []
+            def summarize(self, existing, chunk_text, agent_id):
+                self.summaries.append(chunk_text)
+                return f"summary of: {chunk_text}"
+                
+        summarizer = CountingSummarizer()
+        class FakeRouter:
+            gemini_tpm_limit = 240000
+            def get_context_limit(self):
+                return 1000000
+        summarizer.router = FakeRouter()
+        
+        def base_build_messages(agent_id, world, notifications):
+            return [{"role": "system", "content": "system rules"}]
+            
+        wrapped = _build_messages_api_wrapper(base_build_messages, summarizer)
+        w.agents[0] = a
+        
+        msgs = wrapped(0, w, "notifications")
+        
+        assert a._popped_turns_pending_summary == []
+        assert len(summarizer.summaries) == 5
+        assert "user 10" in summarizer.summaries[0]
+
+        # Test token budget trimming (100k tokens threshold)
+        a._popped_turns_pending_summary = []
+        a._popped_turns_pending_summary.extend([
+            {"role": "user", "content": "huge " * 75000},  # ~93.75k tokens
+            {"role": "assistant", "content": "dropped_reply " * 10},
+            {"role": "user", "content": "huge 2 " * 10000},  # ~12.5k tokens
+            {"role": "assistant", "content": "huge reply 2 " * 10},
+            {"role": "user", "content": "user normal"},
+            {"role": "assistant", "content": "assistant normal"}
+        ])
+        
+        summarizer2 = CountingSummarizer()
+        summarizer2.router = FakeRouter()
+        wrapped2 = _build_messages_api_wrapper(base_build_messages, summarizer2)
+        wrapped2(0, w, "notifications")
+        
+        assert len(summarizer2.summaries) == 1
+        assert "user normal" in summarizer2.summaries[0]
+        assert "huge 2" in summarizer2.summaries[0]
+        assert "dropped_reply" not in summarizer2.summaries[0]
+
+    def test_token_counters_tracking_and_snapshot(self, monkeypatch):
+        import python.scheduler as scheduler
+        from python.state import WorldState, AgentState
+        from python.scheduler import run_tick
+        from python.logger import snapshot_agent
+        
+        w = WorldState()
+        a = AgentState(id=0, name="Alice", age=30)
+        a.chat_history = [{"role": "user", "content": "hello"}]
+        a.alive = True
+        a.busy_until = 0.0
+        w.agents[0] = a
+        
+        class FakeCallServer:
+            def __init__(self):
+                self.token_usage_registry = {
+                    "gemini-1.5-pro": {"prompt": 100, "completion": 50, "total": 150}
+                }
+                self.last_raw = {}
+                
+            def __call__(self, messages, agent_id, **kwargs):
+                return "processed text", 100, 50
+                
+            def get_context_limit(self):
+                return 1000000
+                
+            def get_last_raw(self, agent_id):
+                return {"provider": "gemini", "model": "gemini-1.5-pro", "content": "processed text"}
+                
+        fake_server = FakeCallServer()
+        monkeypatch.setattr(scheduler, "call_server", fake_server)
+        
+        run_tick(w)
+        
+        assert w.token_usage == fake_server.token_usage_registry
+        
+        snapshot = snapshot_agent(a, w.token_usage)
+        assert snapshot["global_token_usage"] == fake_server.token_usage_registry
+
+    def test_work_study_tuition_proration(self):
+        from python.scheduler import _apply_interruption_rollback
+        from python.state import AgentState, WorldState
+        
+        w = WorldState()
+        a = AgentState(id=0, name="Alice", age=30)
+        a.money = 100.0
+        a.expenses = 400.0
+        a.total_expenses = 400.0
+        
+        w.sim_time = 2000.0
+        a.busy_until = 3800.0
+        a.task_state = "studying"
+        a.current_activity = "studying"
+        
+        a._work_meta = {
+            "type": "study",
+            "start_time": 200.0,
+            "total_time": 3600.0,
+            "tuition_paid": 400.0,
+            "energy_spent": 50.0,
+            "fuel_cost": 0.0,
+        }
+        a.energy = 50.0
+        
+        _apply_interruption_rollback(a, w)
+        
+        assert a.money == 300.0
+        assert a.expenses == 200.0
+        assert a.total_expenses == 200.0
+        assert a.energy == 75.0
+
+
+class TestAdditionalAuditFixes:
+    def test_summarization_threshold_and_retry_backoff(self, monkeypatch):
+        from python.state import AgentState
+        from python.api_llm import Summarizer
+        from run_api_sim import _summarize_old_turns, _ensure_summary_fields
+        import time
+
+        a = AgentState(id=0, name="Alice", age=30)
+        _ensure_summary_fields(a)
+        a.chat_history = [
+            {"role": "user", "content": "observation"},
+            {"role": "assistant", "content": "action"},
+        ]
+        
+        fail_count = [0]
+        def mock_summarize(existing, chunk, agent_id=None):
+            if fail_count[0] < 1:
+                fail_count[0] += 1
+                raise RuntimeError("API Error")
+            return "[THIS IS A SUMMARY OF WHAT YOU HAVE DONE TILL NOW] completed summary"
+            
+        class DummySummarizer:
+            def summarize(self, existing, chunk, agent_id=None):
+                return mock_summarize(existing, chunk, agent_id)
+                
+        monkeypatch.setattr(time, "sleep", lambda x: None)
+        
+        dummy = DummySummarizer()
+        res = _summarize_old_turns(a, dummy, 1)
+        
+        assert res is True
+        assert a.summary_text == "[THIS IS A SUMMARY OF WHAT YOU HAVE DONE TILL NOW] completed summary"
+        assert fail_count[0] == 1
+
+    def test_api_context_default_and_override(self, monkeypatch):
+        from run_api_sim import _env_int, DEFAULT_API_CONTEXT_SIZE
+
+        monkeypatch.delenv("API_CONTEXT_SIZE", raising=False)
+        assert _env_int("API_CONTEXT_SIZE", DEFAULT_API_CONTEXT_SIZE) == DEFAULT_API_CONTEXT_SIZE
+
+        monkeypatch.setenv("API_CONTEXT_SIZE", "123456")
+        assert _env_int("API_CONTEXT_SIZE", DEFAULT_API_CONTEXT_SIZE) == 123456
+
+    def test_input_output_logging(self):
+        from python.logger import _get_new_messages_this_turn
+        
+        msgs_t1 = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hello"}
+        ]
+        new_msgs_t1 = _get_new_messages_this_turn(msgs_t1, "reply")
+        assert len(new_msgs_t1) == 3
+        assert new_msgs_t1[0] == {"role": "system", "content": "sys"}
+        assert new_msgs_t1[1] == {"role": "user", "content": "hello"}
+        assert new_msgs_t1[2] == {"role": "assistant", "content": "reply"}
+        
+        msgs_t2 = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "tool", "content": "tool_res"},
+            {"role": "user", "content": "observation"}
+        ]
+        new_msgs_t2 = _get_new_messages_this_turn(msgs_t2, "reply2")
+        assert len(new_msgs_t2) == 3
+        assert new_msgs_t2[0] == {"role": "tool", "content": "tool_res"}
+        assert new_msgs_t2[1] == {"role": "user", "content": "observation"}
+        assert new_msgs_t2[2] == {"role": "assistant", "content": "reply2"}
+
+    def test_movement_delay_and_open_hour_check(self, monkeypatch):
+        from python.state import WorldState, AgentState
+        from python.tooling.handlers.movement import handle_move_to
+        from python.scheduler import _refresh_agent_activity
+
+        w = WorldState()
+        w.sim_time = 10 * 3600.0
+        
+        a = AgentState(id=0, name="Alice", age=30)
+        a.x = 100.0
+        a.y = 100.0
+        a.z = 0.0
+        a.energy = 100.0
+        a.money = 1000.0
+        w.agents[0] = a
+        
+        res, suc, cost = handle_move_to(a, w, {"place": "Library"})
+        assert suc is True
+        assert a.x == 100.0
+        assert a.y == 100.0
+        assert a.location == "moving"
+        assert hasattr(a, "_transit_meta")
+        
+        _refresh_agent_activity(a, w.sim_time + cost)
+        assert a.x != 100.0
+        assert a.location == "Outside Library"
+
+    def test_multi_floor_elevations(self):
+        from python.locations import get_location_by_name
+        
+        loc = get_location_by_name("SmallApartment_Maple_Unit_2_Floor_2")
+        assert loc is not None
+        assert loc.z_min == 5.0
+        assert loc.z_max == 9.5
+        assert loc.entrance_z == 5.0
+        assert loc.interactables[0]["z"] == 5.0
+        
+        loc3 = get_location_by_name("SmallApartment_Maple_Unit_3_Floor_3")
+        assert loc3 is not None
+        assert loc3.z_min == 10.0
+        assert loc3.z_max == 14.5
+        assert loc3.entrance_z == 10.0
+        assert loc3.interactables[0]["z"] == 10.0
+
+    def test_do_hobby_optional_description(self):
+        from python.tooling.execute import _validate_schema
+        
+        err = _validate_schema("do_hobby", {"item": "Book", "description": "reading"})
+        assert err is None
+        
+        err2 = _validate_schema("do_hobby", {"item": "Book"})
+        assert err2 is None
+        
+        err3 = _validate_schema("do_hobby", {"description": "reading"})
+        assert err3 is not None
+
+    def test_atomic_save(self, tmp_path):
+        import os
+        from python.state import WorldState, AgentState
+        from python.persistence import save_world, load_world
+        
+        w = WorldState()
+        w.sim_time = 1234.0
+        a = AgentState(id=0, name="Alice", age=30)
+        a.system_prompt = "system prompt"
+        a.chat_history = [{"role": "user", "content": "hi"}]
+        w.agents[0] = a
+        
+        world_json_path = str(tmp_path / "saves" / "world.json")
+        save_world(w, world_json_path)
+        
+        assert os.path.exists(world_json_path)
+        assert os.path.exists(str(tmp_path / "saves" / "agent_history_0.json"))
+        
+        w_loaded = load_world(world_json_path)
+        assert w_loaded.sim_time == 1234.0
+        assert w_loaded.agents[0].system_prompt == "system prompt"
+        assert w_loaded.agents[0].chat_history == [{"role": "user", "content": "hi"}]
+
+    def test_summarizer_max_retries(self):
+        from python.api_llm import Summarizer
+        class DummyRouter:
+            pass
+        router = DummyRouter()
+        
+        sum1 = Summarizer(router=router, provider="gemini", model="gemini-3.1-flash-lite")
+        assert sum1.max_retries is None
+        
+        sum2 = Summarizer(router=router, provider="gemini", model="gemini-3.1-flash-lite", max_retries=5)
+        assert sum2.max_retries == 5
+
+    def test_save_self_healing(self, tmp_path):
+        import os
+        import shutil
+        from python.persistence import load_world, save_exists
+        
+        final_save_dir = tmp_path / "saves"
+        tmp_save_dir = tmp_path / "saves.tmp"
+        old_save_dir = tmp_path / "saves.old"
+        
+        os.makedirs(tmp_save_dir, exist_ok=True)
+        with open(tmp_save_dir / "world.json", "w") as f:
+            f.write('{"world": {"sim_time": 42.0}, "agents": []}')
+            
+        assert not os.path.exists(final_save_dir)
+        exists = save_exists(str(final_save_dir / "world.json"))
+        assert exists is True
+        assert os.path.exists(final_save_dir)
+        assert not os.path.exists(tmp_save_dir)
+        
+        shutil.rmtree(final_save_dir)
+        
+        os.makedirs(old_save_dir, exist_ok=True)
+        with open(old_save_dir / "world.json", "w") as f:
+            f.write('{"world": {"sim_time": 100.0}, "agents": []}')
+            
+        assert not os.path.exists(final_save_dir)
+        w = load_world(str(final_save_dir / "world.json"))
+        assert w.sim_time == 100.0
+        assert os.path.exists(final_save_dir)
+        assert not os.path.exists(old_save_dir)
+
+    def test_save_promotes_tmp_and_recovers_old(self, tmp_path):
+        import os
+        import shutil
+        from python.persistence import save_world, load_world
+        from python.state import WorldState, AgentState
+
+        w = WorldState()
+        w.sim_time = 7.0
+        a = AgentState(id=1, name="Bob", age=31)
+        a.chat_history = [{"role": "user", "content": "hello"}]
+        w.agents[1] = a
+
+        world_json_path = str(tmp_path / "saves" / "world.json")
+        save_world(w, world_json_path)
+
+        tmp_dir = tmp_path / "saves.tmp"
+        old_dir = tmp_path / "saves.old"
+        assert not os.path.exists(tmp_dir)
+        assert not os.path.exists(old_dir)
+
+        # Simulate a partially recovered state where the final save is gone but
+        # the tmp save still exists.
+        if os.path.exists(tmp_path / "saves"):
+            shutil.rmtree(tmp_path / "saves")
+        os.makedirs(tmp_dir, exist_ok=True)
+        with open(tmp_dir / "world.json", "w", encoding="utf-8") as f:
+            f.write('{"world": {"sim_time": 11.0}, "agents": []}')
+
+        w2 = load_world(world_json_path)
+        assert w2.sim_time == 11.0
+        assert os.path.exists(tmp_path / "saves")
+        assert not os.path.exists(tmp_dir)
+
+        # Simulate an old-save recovery path.
+        shutil.rmtree(tmp_path / "saves")
+        os.makedirs(old_dir, exist_ok=True)
+        with open(old_dir / "world.json", "w", encoding="utf-8") as f:
+            f.write('{"world": {"sim_time": 22.0}, "agents": []}')
+
+        w3 = load_world(world_json_path)
+        assert w3.sim_time == 22.0
+        assert os.path.exists(tmp_path / "saves")
+        assert not os.path.exists(old_dir)
+
+    def test_gemini_key_rotation(self, monkeypatch):
+        import os
+        import time
+        from python.api_llm import LLMRouter, ProviderConfig
+        
+        # Clear existing keys in system env
+        for k in list(os.environ.keys()):
+            if k.startswith("GEMINI_API_KEY"):
+                monkeypatch.delenv(k, raising=False)
+                
+        monkeypatch.setenv("GEMINI_API_KEY_1", "key1")
+        monkeypatch.setenv("GEMINI_API_KEY_2", "key2")
+        monkeypatch.setenv("GEMINI_API_KEY_3", "key3")
+        monkeypatch.setenv("GEMINI_TPM_LIMIT", "220000")
+        monkeypatch.setattr(time, "sleep", lambda x: None)
+        monkeypatch.setattr("python.api_llm.load_dotenv", lambda: None)
+        
+        cfg = ProviderConfig(name="gemini", models=["gemini-3.1-flash-lite"])
+        router = LLMRouter(
+            provider_order=["gemini"],
+            provider_configs={"gemini": cfg},
+        )
+        
+        assert len(router.gemini_keys.keys) == 3
+        assert router.gemini_keys.keys == ["key1", "key2", "key3"]
+        
+        class DummyResponse:
+            def __init__(self):
+                self.candidates = []
+                self.usage_metadata = None
+                
+        called_keys = []
+        class DummyClient:
+            def __init__(self, api_key):
+                self.api_key = api_key
+                class DummyModels:
+                    def generate_content(inner_self, model, contents, config):
+                        called_keys.append(api_key)
+                        if api_key == "key1":
+                            raise RuntimeError("Quota or Rate limit error")
+                        return DummyResponse()
+                self.models = DummyModels()
+                
+        from google import genai
+        monkeypatch.setattr(genai, "Client", lambda api_key: DummyClient(api_key))
+        
+        res = router._call_gemini_rich("gemini-3.1-flash-lite", cfg, [{"role": "user", "content": "hi"}], agent_id=1)
+        
+        assert called_keys == ["key1", "key2"]
+        assert res.provider == "gemini"
