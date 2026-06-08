@@ -11,6 +11,7 @@ from config import (
     CACHE_DIR,
     CHARS_PER_TOKEN,
     LLAMA_CLI_PATH,
+    LLM_REQUEST_TIMEOUT_SECONDS,
     MARKET_CLOSE_HOUR,
     MARKET_CLOSE_MINUTE,
     MARKET_OPEN_HOUR,
@@ -19,6 +20,7 @@ from config import (
     PROMPTS_DIR,
     SUMMARIZER_MODEL_PATH,
     SUMMARIZER_PROMPT_TEMPLATE,
+    SLOT_REQUEST_TIMEOUT_SECONDS,
     SUMMARY_COMPRESS_CYCLES,
     SUMMARY_KEEP_CYCLES,
     SUMMARY_TRIGGER_CYCLES,
@@ -206,8 +208,8 @@ def manage_slot(agent_id: int, action: str):
     data = json.dumps({"filename": f"agent_{agent_id}.bin"}).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     try:
-        urllib.request.urlopen(req)
-    except urllib.error.URLError:
+        urllib.request.urlopen(req, timeout=SLOT_REQUEST_TIMEOUT_SECONDS)
+    except (TimeoutError, urllib.error.URLError):
         pass
 
 
@@ -581,7 +583,7 @@ def call_server(messages: list, agent_id: int) -> tuple:
     )
 
     try:
-        with urllib.request.urlopen(req) as res:
+        with urllib.request.urlopen(req, timeout=LLM_REQUEST_TIMEOUT_SECONDS) as res:
             res_data = json.loads(res.read().decode("utf-8"))
             out = _normalize_assistant_output(res_data.get("content", ""))
             prompt_tokens = res_data.get("tokens_evaluated", max(1, len(prompt_text) // CHARS_PER_TOKEN))

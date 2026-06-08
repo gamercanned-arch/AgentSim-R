@@ -158,30 +158,56 @@ EDUCATION_LOCATIONS = ["School", "Library"]
 
 def parse_tool_call(tool_call_str: str) -> tuple:
     try:
-        clean_str = re.sub(r"<think>.*?</think>", "", tool_call_str, flags=re.DOTALL)
+        clean_str = re.sub(r"<think>.*?</think>", "", tool_call_str, flags=re.DOTALL).strip()
 
         matches = list(re.finditer(r"<tool_call>(.*?)</tool_call>", clean_str, re.DOTALL))
         if not matches:
             return "Parse error: No <tool_call> tags found.", {}
+        if len(matches) != 1:
+            return f"Parse error: Expected exactly one <tool_call> block, found {len(matches)}.", {}
+        if matches[0].span() != (0, len(clean_str)):
+            return "Parse error: Unexpected text outside <tool_call> block.", {}
 
-        block = matches[-1].group(1)
-        func_match = re.search(r"<function=([^>\n]+)>(.*?)</function>", block, re.DOTALL)
-        if not func_match:
+        block = matches[0].group(1).strip()
+        func_matches = list(re.finditer(r"<function=([^>\n]+)>(.*?)</function>", block, re.DOTALL))
+        if not func_matches:
             return "Parse error: No <function=name> tag found.", {}
+        if len(func_matches) != 1:
+            return f"Parse error: Expected exactly one <function=name> block, found {len(func_matches)}.", {}
+        if func_matches[0].span() != (0, len(block)):
+            return "Parse error: Unexpected text inside <tool_call> block.", {}
 
+        func_match = func_matches[0]
         name = func_match.group(1).strip()
+        if not name:
+            return "Parse error: Empty function name.", {}
         params_block = func_match.group(2)
 
         args = {}
-        param_matches = re.finditer(r"<parameter=([^>]+)>(.*?)</parameter>", params_block, re.DOTALL)
+        cursor = 0
+        param_matches = list(re.finditer(r"<parameter=([^>]+)>(.*?)</parameter>", params_block, re.DOTALL))
         for p in param_matches:
+            if params_block[cursor:p.start()].strip():
+                return "Parse error: Unexpected text inside <function> block.", {}
             key = p.group(1).strip()
+            if not key:
+                return "Parse error: Empty parameter name.", {}
+            if key in args:
+                return f"Parse error: Duplicate parameter '{key}'.", {}
             val = p.group(2).strip()
             args[key] = val
+            cursor = p.end()
+
+        if params_block[cursor:].strip():
+            return "Parse error: Unexpected text inside <function> block.", {}
 
         return name, args
     except Exception as e:
         return f"Parse error: {e}", {}
+
+
+def _is_always_open(loc) -> bool:
+    return bool(loc and (loc.open_time == loc.close_time or (loc.open_time <= 0.0 and loc.close_time >= 24.0)))
 
 
 def _check_open_hours(loc, current_time: float) -> bool:
@@ -190,7 +216,7 @@ def _check_open_hours(loc, current_time: float) -> bool:
 
     current_hour = (current_time % 86400) / 3600.0
 
-    if loc.open_time == loc.close_time:
+    if _is_always_open(loc):
         return True
 
     if loc.open_time <= loc.close_time:
@@ -202,7 +228,7 @@ def _seconds_until_close(loc, current_time: float) -> float:
     if not loc:
         return float("inf")
 
-    if loc.open_time == loc.close_time:
+    if _is_always_open(loc):
         return float("inf")
 
     current_day_seconds = current_time % 86400

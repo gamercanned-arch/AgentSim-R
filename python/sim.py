@@ -127,11 +127,14 @@ def main():
 
     tick = 0
     start_wall_time = time.time()
+    completion_reason = "runtime_limit"
+    simulation_complete = True
 
     try:
         while True:
             elapsed_minutes = (time.time() - start_wall_time) / 60.0
             if elapsed_minutes >= MAX_RUNTIME_MINUTES:
+                completion_reason = "runtime_limit"
                 break
 
             context_full = run_tick(world)
@@ -145,24 +148,36 @@ def main():
                     f"Alive: {alive}/{N_AGENTS} | Mkt: ${world.market_price:.2f}"
                 )
 
-            if alive == 0 or context_full:
+            if alive == 0:
+                completion_reason = "all_agents_dead"
+                break
+            if context_full:
+                completion_reason = "context_limit_reached"
                 break
 
     except KeyboardInterrupt:
+        simulation_complete = False
+        completion_reason = "user_aborted"
         print("\n[USER ABORTED]")
     except Exception as e:
+        simulation_complete = False
+        completion_reason = "fatal_error"
         print(f"\n[FATAL ERROR] {str(e)}")
 
     log_global(
         {
-            "simulation_complete": True,
+            "simulation_complete": simulation_complete,
+            "completion_reason": completion_reason,
             "ticks": tick,
             "sim_time_hours": round(world.sim_time / 3600.0, 2),
             "alive_agents": sum(1 for a in world.agents.values() if a.alive),
             "market_price": round(world.market_price, 2),
         }
     )
-    print("\nSimulation complete.")
+    if simulation_complete:
+        print("\nSimulation complete.")
+    else:
+        print(f"\nSimulation ended without normal completion: {completion_reason}.")
 
 
 if __name__ == "__main__":
