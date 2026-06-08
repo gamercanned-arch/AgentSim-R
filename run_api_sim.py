@@ -10,7 +10,12 @@ import time
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
-from python.api_llm import LLMRouter, ProviderConfig, Summarizer, _tools_system_prefix
+from python.api_llm import (
+    LLMRouter,
+    ProviderConfig,
+    Summarizer,
+    _prepare_messages_for_native_tools,
+)
 from python.bootstrap import build_starting_world
 from python.config import (
     CACHE_DIR,
@@ -23,7 +28,6 @@ from python.config import (
 from python.locations import describe_home_location
 from python.logger import log_global
 from python.persistence import load_world, save_exists, save_world
-from python.prompting import GLOBAL_TOOLS_LIST
 import python.scheduler as scheduler
 
 
@@ -385,22 +389,6 @@ def _maybe_summarize_agent(agent, world, summarizer: Summarizer, base_build_mess
         agent.pending_notifications.append("Memory overflow: oldest history force-trimmed.")
 
 
-def _ensure_tools_prefixed_in_system(msgs: list[dict]) -> list[dict]:
-    if not msgs:
-        msgs = [{"role": "system", "content": ""}]
-    if msgs[0].get("role") != "system":
-        msgs = [{"role": "system", "content": ""}] + list(msgs)
-
-    base = str(msgs[0].get("content", "") or "")
-    if "<tools>" in base:
-        return msgs
-
-    msgs = list(msgs)
-    msgs[0] = dict(msgs[0])
-    msgs[0]["content"] = _tools_system_prefix(GLOBAL_TOOLS_LIST) + "\n\n" + base
-    return msgs
-
-
 def _build_messages_api_wrapper(base_build_messages, summarizer: Summarizer):
     def _wrapped(agent_id: int, world, notifications: str):
         agent = world.agents[agent_id]
@@ -487,7 +475,7 @@ def _build_messages_api_wrapper(base_build_messages, summarizer: Summarizer):
         _maybe_summarize_agent(agent, world, summarizer, base_build_messages)
 
         msgs = base_build_messages(agent_id, world, notifications)
-        msgs = _ensure_tools_prefixed_in_system(msgs)
+        msgs = _prepare_messages_for_native_tools(msgs)
 
         summary = (getattr(agent, "summary_text", "") or "").strip()
         if summary:

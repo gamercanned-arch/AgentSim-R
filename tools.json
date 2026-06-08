@@ -104,6 +104,11 @@
       "name": "drop_item",
       "description": "Drop a held item or a named inventory item onto the ground at your current position.",
       "params": ["item_name"]
+    },
+    {
+      "name": "wait",
+      "description": "Wait in place for a specified number of minutes to pass time. Useful when waiting for locations to open or events to happen. Cannot exceed 180 minutes.",
+      "params": ["minutes"]
     }
   ]
 }

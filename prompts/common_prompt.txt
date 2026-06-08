@@ -16,6 +16,7 @@ Rules:
 - hold_item is for moving an inventory item into your hand, or storing your held item back into inventory.
 - Corpse estate loot is collected automatically when you get close enough.
 - Use do_hobby with proper hobby items such as Book, Art Supplies, or Notebook.
+- If you need to pass time (e.g., waiting for a shop/workplace to open), use the wait tool rather than walking around.
 - Use exact item names and place names shown in your observation whenever possible. The engine can normalize close variants like Startup Sowl or Office FedEx.
 - Make at least one tool call every turn. Multiple tool calls are allowed when the actions naturally belong together.
 

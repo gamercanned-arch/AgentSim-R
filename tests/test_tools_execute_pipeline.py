@@ -238,3 +238,25 @@ def test_multiple_tool_calls_sum_cost_not_max():
     assert a.is_sleeping is True
     assert "1. walk: OK" in res
     assert "2. sleep: OK" in res
+
+
+def test_wait_tool_success():
+    w = _mk_world()
+    a = _add_agent(w, 0, "Alice")
+    xml = tool_xml("wait", minutes="15")
+    res, suc, cost = _exec(w, a, xml)
+    assert suc is True
+    assert cost == 15 * 60
+    assert a.current_activity == "waiting"
+    assert "Waited in place" in res
+
+
+def test_wait_tool_clamping():
+    w = _mk_world()
+    a = _add_agent(w, 0, "Alice")
+    xml = tool_xml("wait", minutes="300")
+    res, suc, cost = _exec(w, a, xml)
+    assert suc is True
+    assert cost == 180 * 60
+    assert a.current_activity == "waiting"
+    assert "Waited in place for 180.0 minutes" in res

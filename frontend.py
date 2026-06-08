@@ -284,12 +284,27 @@ HTML_TEMPLATE = """
             let reasoningHTML = "";
             
             if(data.raw_model_reasoning) {
-                const safeReasoning = escapeHTML(data.raw_model_reasoning).replace(/\n/g, '<br>');
+                const safeReasoning = escapeHTML(data.raw_model_reasoning).replace(/\\n/g, '<br>');
                 reasoningHTML = `
                     <div class="mb-4">
                         <span class="text-[10px] font-mono tracking-wider text-slate-500 block mb-1 uppercase">Cognitive Process</span>
                         <div class="text-sm text-slate-300/80 font-normal italic border-l border-slate-700 pl-3">"${safeReasoning}"</div>
                     </div>
+                `;
+            }
+
+            let nativeReasoningHTML = "";
+            if(data.native_reasoning) {
+                const safeNative = escapeHTML(data.native_reasoning).replace(/\\n/g, '<br>');
+                nativeReasoningHTML = `
+                    <details class="mb-4 text-xs font-mono text-slate-400 cursor-pointer select-none">
+                        <summary class="hover:text-white transition-colors uppercase tracking-wider text-[10px] text-slate-500 focus:outline-none">
+                            Toggle API Thinking Trace
+                        </summary>
+                        <div class="mt-2 bg-slate-950/80 rounded-lg border border-slate-900 p-3.5 text-slate-300 font-normal italic border-l-2 border-indigo-500/50 pl-3 whitespace-pre-wrap">
+                            ${safeNative}
+                        </div>
+                    </details>
                 `;
             }
 
@@ -304,6 +319,7 @@ HTML_TEMPLATE = """
                     <span class="text-slate-400">${escapeHTML(data.raw_model || "Unknown Model")}</span>
                 </div>
                 ${reasoningHTML}
+                ${nativeReasoningHTML}
                 <div class="mb-4">
                     <span class="text-[10px] font-mono tracking-wider text-slate-500 block mb-1 uppercase">Structured Tool Command</span>
                     <div class="bg-slate-950 rounded-lg border border-slate-900 p-3.5 font-mono text-xs text-blue-300 overflow-x-auto whitespace-pre-wrap">

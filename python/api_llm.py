@@ -1,22 +1,38 @@
 from __future__ import annotations
 
-import json
 import os
 import random
 import re
 import time
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 
 from google import genai
 from google.genai import types
-from google.genai.errors import APIError
-
 from python.config import CHARS_PER_TOKEN
 from python.prompting import GLOBAL_TOOLS_LIST
+
+
+_STRING_PARAM_HINTS = {
+    "action",
+    "description",
+    "direction",
+    "item",
+    "item_name",
+    "jobname",
+    "message",
+    "person",
+    "person_or_object",
+    "place",
+    "type",
+    "value",
+}
+_NUMBER_PARAM_HINTS = {"amount", "hours", "minutes"}
+_INTEGER_PARAM_HINTS = {"shares"}
+_OPTIONAL_TOOL_PARAMS = {"do_hobby": {"description"}}
 
 def _approx_tokens_from_messages(messages: List[dict]) -> int:
     total_chars = 0
@@ -25,41 +41,105 @@ def _approx_tokens_from_messages(messages: List[dict]) -> int:
         total_chars += len(str(m.get("content", ""))) + 1
     return max(1, total_chars // CHARS_PER_TOKEN)
 
-def _tools_system_prefix(tools: List[dict]) -> str:
-    lines = []
-    lines.append("# Tools")
-    lines.append("")
-    lines.append("You have access to the following functions:")
-    lines.append("")
-    lines.append("<tools>")
-    for t in tools:
-        lines.append(json.dumps(t, ensure_ascii=False))
-    lines.append("</tools>")
-    lines.append("")
-    lines.append("If you choose to call a function ONLY reply in the following format with NO suffix:")
-    lines.append("")
-    lines.append("<tool_call>")
-    lines.append("<function=example_function_name>")
-    lines.append("<parameter=example_parameter_1>")
-    lines.append("value_1")
-    lines.append("</parameter>")
-    lines.append("<parameter=example_parameter_2>")
-    lines.append("This is the value for the second parameter")
-    lines.append("that can span")
-    lines.append("multiple lines")
-    lines.append("</parameter>")
-    lines.append("</function>")
-    lines.append("</tool_call>")
-    lines.append("")
-    lines.append("<IMPORTANT>")
-    lines.append("Reminder:")
-    lines.append("- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags")
-    lines.append("- Required parameters MUST be specified")
-    lines.append("- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after")
-    lines.append("- If your model/provider supports a separate reasoning trace field, put reasoning there and keep assistant content focused on the tool call.")
-    lines.append("- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls")
-    lines.append("</IMPORTANT>")
+def _schema_for_tool_param(param_name: str) -> types.Schema:
+    key = str(param_name or "").strip().lower()
+    if key in _INTEGER_PARAM_HINTS:
+        return types.Schema(type=types.Type.INTEGER)
+    if key in _NUMBER_PARAM_HINTS:
+        return types.Schema(type=types.Type.NUMBER)
+    if key in _STRING_PARAM_HINTS:
+        return types.Schema(type=types.Type.STRING)
+    return types.Schema(type=types.Type.STRING)
+
+
+def _tool_function_declarations(tools: List[dict]) -> List[types.FunctionDeclaration]:
+    declarations: List[types.FunctionDeclaration] = []
+    for tool in tools or []:
+        name = str(tool.get("name", "") or "").strip()
+        if not name:
+            continue
+
+        raw_params = tool.get("params", None)
+        if raw_params is None:
+            raw_params = tool.get("parameters", [])
+
+        if isinstance(raw_params, dict):
+            raw_params = list((raw_params.get("properties") or {}).keys())
+
+        params = [str(p).strip() for p in (raw_params or []) if str(p).strip()]
+        declaration = types.FunctionDeclaration(
+            name=name,
+            description=str(tool.get("description", "") or "").strip() or None,
+        )
+        required_params = [
+            p for p in params if p not in _OPTIONAL_TOOL_PARAMS.get(name, set())
+        ]
+        if params:
+            declaration.parameters = types.Schema(
+                type=types.Type.OBJECT,
+                properties={p: _schema_for_tool_param(p) for p in params},
+                required=required_params,
+                property_ordering=params,
+            )
+        declarations.append(declaration)
+    return declarations
+
+
+def _tool_config_for_declarations(
+    declarations: List[types.FunctionDeclaration],
+) -> types.ToolConfig | None:
+    if not declarations:
+        return None
+    return types.ToolConfig(
+        function_calling_config=types.FunctionCallingConfig(
+            mode=types.FunctionCallingConfigMode.ANY,
+            allowed_function_names=[str(d.name) for d in declarations if d.name],
+        )
+    )
+
+
+def _escape_xml_text(value: Any) -> str:
+    text = "" if value is None else str(value)
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _function_call_to_xml(function_call: Any) -> str:
+    name = str(getattr(function_call, "name", "") or "").strip()
+    args = getattr(function_call, "args", None) or {}
+    if not isinstance(args, dict):
+        args = {}
+
+    lines = ["<tool_call>", f"<function={name}>"]
+    for key, value in args.items():
+        key = str(key).strip()
+        if not key:
+            continue
+        lines.extend([
+            f"<parameter={key}>",
+            _escape_xml_text(value),
+            "</parameter>",
+        ])
+    lines.extend(["</function>", "</tool_call>"])
     return "\n".join(lines)
+
+
+def _extract_function_calls(response: Any) -> List[Any]:
+    direct_calls = getattr(response, "function_calls", None)
+    if direct_calls:
+        return list(direct_calls)
+
+    calls = []
+    for candidate in getattr(response, "candidates", None) or []:
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", None) or []:
+            function_call = getattr(part, "function_call", None)
+            if function_call is not None:
+                calls.append(function_call)
+    return calls
 
 
 from python.prompting import _normalize_assistant_output as _normalize_assistant_output_xml
@@ -122,6 +202,108 @@ def _sanitize_provider_messages(messages: List[dict]) -> List[dict]:
         else:
             out.append({"role": "user", "content": f"[{role}]\n{content}"})
     return out
+
+
+_NATIVE_TOOL_RULES = """[Native Tool Calling]
+- You MUST choose at least one provided function tool every turn.
+- Use only the function tools provided by the API request.
+- Return function calls through the model's native function-calling mechanism; do not write XML tags or tool schemas in text.
+- Multiple function calls are allowed when the actions naturally belong together."""
+
+
+def _strip_legacy_tool_prompt(text: str) -> str:
+    s = str(text or "")
+    s = re.sub(
+        r"# Tools\s+You have access to the following functions:.*?</IMPORTANT>\s*",
+        "",
+        s,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    s = re.sub(r"<tools>.*?</tools>\s*", "", s, flags=re.DOTALL | re.IGNORECASE)
+
+    cleaned = []
+    skip_example = False
+    for line in s.splitlines():
+        stripped = line.strip()
+        lower = stripped.lower()
+
+        if stripped.startswith("TOOL CALLING FORMAT"):
+            skip_example = True
+            continue
+        if skip_example:
+            if (
+                not stripped
+                or stripped.startswith("Clarifications:")
+                or stripped.startswith("[")
+                or stripped.startswith("- ")
+            ):
+                skip_example = False
+            else:
+                continue
+        if not stripped:
+            cleaned.append(line)
+            continue
+
+        if stripped == "You MUST reply with one or more tool calls.":
+            cleaned.append("You MUST choose one or more provided function tools.")
+            continue
+        if stripped == "- Use only the tools listed in your system instructions.":
+            cleaned.append("- Use only the function tools provided by the API request.")
+            continue
+        if stripped == "- Make at least one tool call every turn. Multiple tool calls are allowed when the actions naturally belong together.":
+            cleaned.append("- Choose at least one function tool every turn. Multiple function calls are allowed when the actions naturally belong together.")
+            continue
+
+        if any(
+            marker in stripped
+            for marker in (
+                "<tool_call",
+                "</tool_call",
+                "<function=",
+                "</function>",
+                "<parameter=",
+                "</parameter>",
+                "<think>",
+                "</think>",
+            )
+        ):
+            continue
+        if (
+            "xml" in lower
+            or "after the final" in lower
+            or "before the <tool_call>" in lower
+            or "text before <tool_call>" in lower
+            or "do not output any text after" in lower
+            or "must think" in lower
+            or "place your reason" in lower
+        ):
+            continue
+
+        cleaned.append(line)
+
+    return "\n".join(cleaned).strip()
+
+
+def _prepare_messages_for_native_tools(messages: List[dict]) -> List[dict]:
+    msgs = deepcopy(messages)
+    if not msgs or msgs[0].get("role") != "system":
+        msgs.insert(0, {"role": "system", "content": ""})
+
+    native_rules_added = any(
+        msg.get("role") == "system"
+        and "[Native Tool Calling]" in str(msg.get("content", "") or "")
+        for msg in msgs
+    )
+    for msg in msgs:
+        if msg.get("role") != "system":
+            continue
+        content = _strip_legacy_tool_prompt(str(msg.get("content", "") or ""))
+        if not native_rules_added:
+            content = "\n\n".join(s for s in (_NATIVE_TOOL_RULES, content) if s)
+            native_rules_added = True
+        msg["content"] = content
+
+    return msgs
 
 
 class LLMRouter:
@@ -217,21 +399,17 @@ class LLMRouter:
             return seq
         return list(self.provider_order)
 
-    def _inject_tools_into_system(self, messages: List[dict]) -> List[dict]:
-        msgs = deepcopy(messages)
-        if not msgs or msgs[0].get("role") != "system":
-            msgs.insert(0, {"role": "system", "content": ""})
-        base = str(msgs[0].get("content", "") or "")
-        if "<tools>" in base:
-            return msgs
-        msgs[0]["content"] = _tools_system_prefix(GLOBAL_TOOLS_LIST) + "\n\n" + base
-        return msgs
-
     def __call__(self, messages: List[dict], agent_id: int, prompt_text=None) -> Tuple[str, int, int]:
-        msgs = self._inject_tools_into_system(messages)
-        msgs = _sanitize_provider_messages(msgs)
+        messages = _prepare_messages_for_native_tools(messages)
+        msgs = _sanitize_provider_messages(messages)
 
-        raw = self._route_call_rich(msgs, provider=None, model=None, agent_id=agent_id)
+        raw = self._route_call_rich(
+            msgs,
+            provider=None,
+            model=None,
+            agent_id=agent_id,
+            use_tools=True,
+        )
         self.last_raw[int(agent_id)] = {
             "provider": raw.provider,
             "model": raw.model,
@@ -239,7 +417,7 @@ class LLMRouter:
             "reasoning": raw.reasoning,
         }
 
-        processed = _normalize_assistant_output_xml(raw.content)
+        processed = raw.content if raw.content.lstrip().startswith("<tool_call>") else _normalize_assistant_output_xml(raw.content)
         return processed, raw.prompt_tokens, raw.completion_tokens
 
     def call_specific_raw(
@@ -268,10 +446,25 @@ class LLMRouter:
             max_output_tokens=int(max_output_tokens),
         )
 
-        raw = self._call_provider_model_rich(provider, model, cfg, msgs, agent_id=agent_id)
+        raw = self._call_provider_model_rich(
+            provider,
+            model,
+            cfg,
+            msgs,
+            agent_id=agent_id,
+            use_tools=False,
+        )
         return (raw.content or "").strip()
 
-    def _route_call_rich(self, messages: List[dict], provider: Optional[str], model: Optional[str], agent_id: Optional[int] = None) -> RawLLMResponse:
+    def _route_call_rich(
+        self,
+        messages: List[dict],
+        provider: Optional[str],
+        model: Optional[str],
+        agent_id: Optional[int] = None,
+        *,
+        use_tools: bool = False,
+    ) -> RawLLMResponse:
         if provider and model:
             cfg = self.provider_configs.get(provider)
             if not cfg:
@@ -284,7 +477,14 @@ class LLMRouter:
                 timeout_s=cfg.timeout_s,
                 max_output_tokens=cfg.max_output_tokens,
             )
-            return self._call_provider_model_rich(provider, model, cfg2, messages, agent_id=agent_id)
+            return self._call_provider_model_rich(
+                provider,
+                model,
+                cfg2,
+                messages,
+                agent_id=agent_id,
+                use_tools=use_tools,
+            )
 
         seq = self._provider_sequence()
         last_err = None
@@ -293,29 +493,71 @@ class LLMRouter:
             if not cfg or not cfg.models:
                 continue
             try:
-                return self._call_provider_rich(cfg, messages, agent_id=agent_id)
+                return self._call_provider_rich(
+                    cfg,
+                    messages,
+                    agent_id=agent_id,
+                    use_tools=use_tools,
+                )
             except Exception as e:
                 last_err = e
                 continue
         raise RuntimeError(f"All providers failed. Last error: {last_err}")
 
-    def _call_provider_rich(self, cfg: ProviderConfig, messages: List[dict], agent_id: Optional[int] = None) -> RawLLMResponse:
+    def _call_provider_rich(
+        self,
+        cfg: ProviderConfig,
+        messages: List[dict],
+        agent_id: Optional[int] = None,
+        *,
+        use_tools: bool = False,
+    ) -> RawLLMResponse:
         last_err = None
         for model in cfg.models:
             try:
-                return self._call_provider_model_rich(cfg.name, model, cfg, messages, agent_id=agent_id)
+                return self._call_provider_model_rich(
+                    cfg.name,
+                    model,
+                    cfg,
+                    messages,
+                    agent_id=agent_id,
+                    use_tools=use_tools,
+                )
             except Exception as e:
                 last_err = e
                 continue
         raise RuntimeError(f"Provider {cfg.name} failed for all models. Last error: {last_err}")
 
-    def _call_provider_model_rich(self, provider: str, model: str, cfg: ProviderConfig, messages: List[dict], agent_id: Optional[int] = None) -> RawLLMResponse:
+    def _call_provider_model_rich(
+        self,
+        provider: str,
+        model: str,
+        cfg: ProviderConfig,
+        messages: List[dict],
+        agent_id: Optional[int] = None,
+        *,
+        use_tools: bool = False,
+    ) -> RawLLMResponse:
         provider = provider.lower()
         if provider == "gemini":
-            return self._call_gemini_rich(model, cfg, messages, agent_id=agent_id)
+            return self._call_gemini_rich(
+                model,
+                cfg,
+                messages,
+                agent_id=agent_id,
+                use_tools=use_tools,
+            )
         raise ValueError(f"Unknown provider: {provider}")
 
-    def _call_gemini_rich(self, model: str, cfg: ProviderConfig, messages: List[dict], agent_id: Optional[int] = None) -> RawLLMResponse:
+    def _call_gemini_rich(
+        self,
+        model: str,
+        cfg: ProviderConfig,
+        messages: List[dict],
+        agent_id: Optional[int] = None,
+        *,
+        use_tools: bool = False,
+    ) -> RawLLMResponse:
         if len(self.gemini_keys) == 0:
             raise RuntimeError("No Gemini keys found (GEMINI_API_KEY_1..N).")
 
@@ -351,11 +593,24 @@ class LLMRouter:
             else:
                 merged_contents.append(types.Content(role=role, parts=[types.Part.from_text(text=content)]))
 
+        tool_declarations = _tool_function_declarations(GLOBAL_TOOLS_LIST) if use_tools else []
         genai_config = types.GenerateContentConfig(
             system_instruction=system_instruction,
             temperature=float(cfg.temperature),
             top_p=float(cfg.top_p),
             max_output_tokens=max_tokens,
+            thinking_config=types.ThinkingConfig(thinking_level="high"),
+            tools=(
+                [types.Tool(function_declarations=tool_declarations)]
+                if tool_declarations
+                else None
+            ),
+            tool_config=_tool_config_for_declarations(tool_declarations),
+            automatic_function_calling=(
+                types.AutomaticFunctionCallingConfig(disable=True)
+                if tool_declarations
+                else None
+            ),
         )
 
         n_keys = len(self.gemini_keys.keys)
@@ -408,10 +663,22 @@ class LLMRouter:
                 
                 # Safe response text extraction
                 content = ""
+                reasoning = ""
+                function_calls = _extract_function_calls(response) if use_tools else []
                 if response.candidates:
                     candidate = response.candidates[0]
                     if candidate.content and candidate.content.parts:
-                        content = candidate.content.parts[0].text or ""
+                        for part in candidate.content.parts:
+                            if getattr(part, "function_call", None) is not None:
+                                continue
+                            if getattr(part, "thought", False):
+                                reasoning += (part.text or "")
+                            else:
+                                content += (part.text or "")
+                if function_calls:
+                    content = "\n".join(_function_call_to_xml(fc) for fc in function_calls)
+                elif use_tools:
+                    content = content.strip() or "[NO FUNCTION CALL RETURNED]"
 
                 # Extract actual token counts
                 prompt_tokens = 0
@@ -435,7 +702,7 @@ class LLMRouter:
                     provider="gemini",
                     model=model,
                     content=content,
-                    reasoning="",
+                    reasoning=reasoning,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                 )

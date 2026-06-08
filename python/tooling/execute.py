@@ -37,6 +37,7 @@ from python.tooling.handlers.inventory_loot import (
 from python.tooling.handlers.needs import (
     handle_do_hobby,
     handle_sleep,
+    handle_wait,
 )
 
 ToolHandler = Callable[[object, object, dict], Tuple[str, bool, int]]
@@ -57,6 +58,7 @@ REGISTRY: Dict[str, ToolHandler] = {
     "sell_stock": handle_sell_stock,
     "sleep": handle_sleep,
     "do_hobby": handle_do_hobby,
+    "wait": handle_wait,
     "talk_to": handle_talk_to,
     "call_person": handle_call_person,
     "give_item": handle_give_item,
@@ -84,6 +86,7 @@ FALLBACK_TOOL_SCHEMAS: Dict[str, set[str]] = {
     "sell_stock": {"shares"},
     "sleep": {"hours"},
     "do_hobby": {"item", "description"},
+    "wait": {"minutes"},
     "give_item": {"person", "item"},
     "give_money": {"person", "amount"},
     "pick_item": {"item_name"},

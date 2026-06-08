@@ -43,6 +43,21 @@ def handle_do_hobby(agent, world, args: dict):
             source = idx
 
     if not item_data:
+        # Check if we can fall back to meditation (no hobby items and money < $5)
+        has_any_hobby_item = False
+        if agent.currently_holding and agent.currently_holding.get("item") in HOBBY_ITEMS:
+            has_any_hobby_item = True
+        else:
+            for it in agent.inventory:
+                if it.get("item") in HOBBY_ITEMS:
+                    has_any_hobby_item = True
+                    break
+        
+        if not has_any_hobby_item and agent.money < 5.0:
+            agent.stress = max(0.0, agent.stress - 5.0)
+            agent.happiness = min(100.0, agent.happiness + 3.0)
+            return "With no hobby items available and insufficient funds to buy one, you meditate and breathe deeply. Stress fell slightly.", True, 3600
+
         agent.failed_calls += 1
         return f"You don't have {item}.", False, 60
 
@@ -69,3 +84,17 @@ def handle_do_hobby(agent, world, args: dict):
         msg += f" {item_data.get('item','Unknown')} wore out."
 
     return msg, True, 3600
+
+
+def handle_wait(agent, world, args: dict):
+    try:
+        minutes = float(args.get("minutes", 10.0))
+    except (ValueError, TypeError):
+        minutes = 10.0
+
+    minutes = max(1.0, min(180.0, minutes))
+    time_cost = int(minutes * 60)
+
+    agent.current_activity = "waiting"
+
+    return f"Waited in place for {minutes:.1f} minutes.", True, time_cost

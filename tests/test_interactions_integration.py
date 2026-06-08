@@ -277,3 +277,25 @@ def test_change_status_accepts_pending_request_and_updates_both_agents():
     assert b.relationships_status == "dating"
     assert a.relationship_partner == "Bob"
     assert b.relationship_partner == "Alice"
+
+
+def test_interruption_during_wait(temp_logs, monkeypatch):
+    import python.scheduler
+
+    w, a, b = make_world_two_agents()
+    
+    b.current_activity = "waiting"
+    b.busy_until = 6000.0
+
+    monkeypatch.setattr(random, "uniform", lambda lo, hi: 5.0)
+
+    plans = {0: [tool_xml("attack_person", person="Bob")]}
+    stub = StubServer(plans)
+    monkeypatch.setattr(python.scheduler, "call_server", stub)
+
+    python.scheduler.run_tick(w)
+
+    assert b.busy_until <= w.sim_time
+    assert b.current_activity == "idle"
+    assert any("interrupted" in n.lower() for n in b.pending_notifications)
+

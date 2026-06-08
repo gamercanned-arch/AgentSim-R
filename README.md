@@ -142,8 +142,8 @@ If the model outputs multiple `<tool_call>...</tool_call>` blocks, the engine ex
 - Overall `success` is **True only if ALL steps succeeded**.
 - **Time cost is summed** across steps. Failed steps add a minimum 60-second penalty. This prevents multi-call outputs from "cheating time".
 
-### API runner note: provider tool calling is deprecated
-In API mode, providers are used as **plain chat completions**. The model outputs XML tool calls as normal text, and the engine parses them. No `assistant.tool_calls[]` handshake is required.
+### API runner note: native tool calling
+In API mode, Gemini receives `tools` through the Google GenAI SDK's native function-calling API. The router converts returned function calls into the engine's XML shape internally so the existing scheduler and tool executor can keep using the same path.
 
 ---
 

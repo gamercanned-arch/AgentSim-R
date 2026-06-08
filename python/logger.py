@@ -222,6 +222,7 @@ def log_turn(
         "raw_model": raw_model,
         "raw_model_output": raw_output,
         "raw_model_reasoning": raw_reasoning,
+        "native_reasoning": raw_reasoning,
         "processed_model_output": processed_output
         if processed_output is not None
         else raw_output,
@@ -268,10 +269,12 @@ def log_io(
         "raw_model": raw_model,
         "raw_model_output": raw_output,
         "raw_model_reasoning": raw_reasoning,
+        "native_reasoning": raw_reasoning,
         "processed_model_output": processed_output
         if processed_output is not None
         else raw_output,
     }
+
 
     io_entry["turn_messages"] = _get_new_messages_this_turn(messages, raw_output)
 

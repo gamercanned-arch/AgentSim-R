@@ -104,7 +104,7 @@ def handle_work_job(agent, world, args: dict):
         agent.failed_calls += 1
         return "Already doing a task.", False, 60
         
-    if agent.stress > 95.0:
+    if agent.stress > 99.0:
         agent.failed_calls += 1
         return "Stress was too high, consider sleeping or doing a hobby first.", False, 60
         
@@ -191,7 +191,7 @@ def handle_get_education(agent, world, args: dict):
         agent.failed_calls += 1
         return "Already doing a task.", False, 60
         
-    if agent.stress > 95.0:
+    if agent.stress > 99.0:
         agent.failed_calls += 1
         return "Stress was too high, consider sleeping or doing a hobby first.", False, 60
         
