@@ -29,22 +29,7 @@ _COORD_RE = re.compile(
     r"^\s*\(?\s*-?\d+(?:\.\d+)?\s*(?:,\s*|\s+)-?\d+(?:\.\d+)?(?:\s*(?:,\s*|\s+)-?\d+(?:\.\d+)?)?\s*\)?\s*$"
 )
 
-def _bearing_to_text(dx: float, dy: float) -> str:
-    if abs(dx) < 1e-6 and abs(dy) < 1e-6:
-        return "here"
-    ang = math.degrees(math.atan2(dy, dx))
-    dirs = [
-        ("east", 0),
-        ("northeast", 45),
-        ("north", 90),
-        ("northwest", 135),
-        ("west", 180),
-        ("southwest", -135),
-        ("south", -90),
-        ("southeast", -45),
-    ]
-    best = min(dirs, key=lambda d: abs(((ang - d[1] + 180) % 360) - 180))
-    return best[0]
+from python.prompting import _bearing_to_text
 
 def _looks_like_coordinates(text: str) -> bool:
     return bool(_COORD_RE.match(str(text or "").strip()))
@@ -183,34 +168,30 @@ def handle_move_to(agent, world, args: dict):
         agent.money -= fuel_cost
         record_expense(agent, fuel_cost)
 
-    agent.x, agent.y, agent.z = (
-        float(outside_xyz[0]),
-        float(outside_xyz[1]),
-        float(outside_xyz[2]),
-    )
-    agent.location = (
-        f"Outside {target_loc.name}" if target_loc.has_roof else target_loc.name
-    )
+    agent.location = "moving"
     agent.current_activity = "moving"
+
+    from python.tooling.execute import get_agent_action_time
+    start_time = get_agent_action_time(agent, world)
 
     agent._transit_meta = {
         "start_xyz": old_xyz,
         "end_xyz": outside_xyz,
-        "start_time": float(world.sim_time),
+        "start_time": float(start_time),
         "total_time": float(time_cost),
         "energy_cost": float(energy_drain),
-        "fuel_cost": float(fuel_cost)
+        "fuel_cost": float(fuel_cost),
+        "target_location": target_loc.name,
+        "has_roof": target_loc.has_roof,
+        "mode": mode,
     }
-
-    if mode == "vehicle":
-        agent.vehicle_x, agent.vehicle_y, agent.vehicle_z = agent.x, agent.y, agent.z
 
     dx = entrance_xyz[0] - outside_xyz[0]
     dy = entrance_xyz[1] - outside_xyz[1]
     door_dist = math.hypot(dx, dy)
     direction = _bearing_to_text(dx, dy)
 
-    will_be_open = check_open_hours(target_loc, world.sim_time + time_cost)
+    will_be_open = check_open_hours(target_loc, start_time + time_cost)
     status_hint = ""
     if not will_be_open and not is_home_location(target_loc.name):
         status_hint = (
@@ -284,6 +265,11 @@ def handle_walk(agent, world, args: dict):
         agent.failed_calls += 1
         return "Invalid direction.", False, 60
 
+    energy_drain = 0.15
+    if agent.energy < energy_drain:
+        agent.failed_calls += 1
+        return f"Too exhausted to walk. Need {energy_drain:.2f} Energy.", False, 60
+
     new_x = agent.x + delta[0]
     new_y = agent.y + delta[1]
 
@@ -318,7 +304,9 @@ def handle_walk(agent, world, args: dict):
         )
 
     if new_loc and (not current_loc or current_loc.name != new_loc.name):
-        if not check_open_hours(new_loc, world.sim_time):
+        from python.tooling.execute import get_agent_action_time
+        arrival_time = get_agent_action_time(agent, world) + 60
+        if not check_open_hours(new_loc, arrival_time):
             agent.failed_calls += 1
             return f"{new_loc.name} is currently closed.", False, 60
 
@@ -328,6 +316,7 @@ def handle_walk(agent, world, args: dict):
             agent.failed_calls += 1
             return lock_reason, False, 60
 
+    agent.energy = max(0.0, agent.energy - energy_drain)
     agent.x = new_x
     agent.y = new_y
     agent.location = new_loc.name if new_loc else "Outside"

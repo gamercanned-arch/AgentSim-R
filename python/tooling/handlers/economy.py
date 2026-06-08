@@ -14,6 +14,7 @@ from python.tooling.helpers import (
     canonicalize_food_name,
     canonicalize_item_name,
     check_open_hours,
+    normalize_label,
     record_expense,
     validate_shares,
 )
@@ -78,10 +79,10 @@ def handle_buy_item(agent, world, args: dict):
                 False,
                 60,
             )
-        new_home_location = world.allocate_home_lot(item, prefer_floor1=True)
+        new_home_location = world.allocate_home_lot(item, require_floor1=False)
         if not new_home_location:
             agent.failed_calls += 1
-            return f"No vacant {item} Floor 1 lots are currently available.", False, 60
+            return f"No vacant {item} lots are currently available.", False, 60
         if old_home_type and old_home_location:
             world.release_home_lot(old_home_type, old_home_location)
         agent.money += sell_price
@@ -92,8 +93,8 @@ def handle_buy_item(agent, world, args: dict):
         agent.owned_locations = [new_home_location]
         new_loc_def = get_location_by_name(new_home_location)
         if new_loc_def:
-            cx, cy, cz = get_location_center(new_loc_def)
-            agent.x, agent.y, agent.z = cx, cy, cz
+            cx, cy, _cz = get_location_center(new_loc_def)
+            agent.x, agent.y, agent.z = cx, cy, new_loc_def.z_min
             agent.location = new_home_location
         return (
             f"Sold {old_home_type or 'previous home'} for ${sell_price:.2f}. "
@@ -141,7 +142,7 @@ def handle_eat_food(agent, world, args: dict):
     item = canonicalize_food_name(str(args.get("item", "")).strip()[:100])
     food_data = None
     held_name = (agent.currently_holding or {}).get("item", "")
-    if agent.currently_holding and str(held_name).lower() == item.lower():
+    if agent.currently_holding and normalize_label(str(held_name)) == normalize_label(item):
         if item not in ITEM_CATALOG["food"]:
             agent.failed_calls += 1
             return f"{item} is not edible food.", False, 60
@@ -149,7 +150,7 @@ def handle_eat_food(agent, world, args: dict):
         agent.currently_holding = None
     else:
         idx = next(
-            (i for i, it in enumerate(agent.inventory) if str(it.get("item", "")).lower() == item.lower()),
+            (i for i, it in enumerate(agent.inventory) if normalize_label(str(it.get("item", ""))) == normalize_label(item)),
             -1,
         )
         if idx != -1:

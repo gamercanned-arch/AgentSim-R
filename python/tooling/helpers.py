@@ -120,6 +120,8 @@ def seconds_until_close(loc, sim_time: float) -> float:
     open_seconds = loc.open_time * 3600.0
 
     if loc.open_time <= loc.close_time:
+        if current_day_seconds < open_seconds:
+            return close_seconds - open_seconds
         return max(0.0, close_seconds - current_day_seconds)
 
     if current_day_seconds >= open_seconds:
@@ -129,16 +131,37 @@ def seconds_until_close(loc, sim_time: float) -> float:
     return 0.0
 
 
-def is_busy(target_agent, sim_time: float) -> bool:
+def is_unavailable(target_agent, sim_time: float) -> bool:
+    """True only when the agent is dead or sleeping.
+
+    Brief cooldowns (busy_until > sim_time from normal actions like eating,
+    talking, walking) and active tasks (working, studying) do NOT block
+    social interactions (they trigger interruption and rollback logic).
+    """
     if not target_agent.alive:
         return True
     if target_agent.is_sleeping:
         return True
-    if target_agent.task_state != "idle":
-        return True
-    if target_agent.busy_until > sim_time:
-        return True
     return False
+
+
+def busy_reason(target_agent, sim_time: float) -> str:
+    """Human-readable reason why an agent is unavailable, or '' if available."""
+    if not target_agent.alive:
+        return "dead"
+    if target_agent.is_sleeping:
+        return "sleeping"
+    if target_agent.task_state != "idle":
+        activity = getattr(target_agent, "current_activity", "busy")
+        if activity in ("working", "studying"):
+            return activity
+        return "busy with a task"
+    return ""
+
+
+def is_busy(target_agent, sim_time: float) -> bool:
+    """Backward-compatible alias for is_unavailable."""
+    return is_unavailable(target_agent, sim_time)
 
 
 def can_physically_reach_person(agent, target, max_distance: float) -> Tuple[bool, str]:
@@ -204,14 +227,17 @@ def validate_shares(raw) -> Tuple[int, Optional[str]]:
 
 
 def resolve_workplace_name(job_raw: str, agent) -> Optional[str]:
+    def _has_word(text: str, word: str) -> bool:
+        return bool(re.search(r'\b' + re.escape(word) + r'\b', text))
+
     lowered = normalize_label(job_raw)
     for key, loc_name in WORKPLACE_BY_JOB.items():
-        if normalize_label(key) in lowered:
+        if _has_word(lowered, normalize_label(key)):
             return loc_name
 
     fallback = normalize_label(agent.job or "")
     for key, loc_name in WORKPLACE_BY_JOB.items():
-        if normalize_label(key) in fallback:
+        if _has_word(fallback, normalize_label(key)):
             return loc_name
 
     return None

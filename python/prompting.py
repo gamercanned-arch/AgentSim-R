@@ -61,9 +61,9 @@ def _load_text_file(*candidate_names: str) -> str:
 
 
 def _format_hour(hour_float: float) -> str:
-    if float(hour_float) >= 24.0:
-        return "24:00"
     total_minutes = int(round(float(hour_float) * 60))
+    if total_minutes >= 1440:
+        return "24:00"
     hh = (total_minutes // 60) % 24
     mm = total_minutes % 60
     return f"{hh:02d}:{mm:02d}"
@@ -104,12 +104,13 @@ def _build_base_system_prompt(agent) -> str:
         "- Open-air destinations like Park_Central count as being at that location when you arrive.\n"
         "- Vehicles: you can ride only if within 100m of your parked vehicle; fuel costs $/km when riding.\n"
         "- If you cannot afford fuel, move_to fails.\n"
+        "- If you need to pass time (e.g., waiting for a shop/workplace to open), use the wait tool rather than walking around.\n"
         "- pick_item is for nearby dropped ground items, or for the required task prop during an active work or study task.\n"
         "- hold_item moves an inventory item into your hand, or stores your held item back into inventory when item_name is store or None.\n"
         "- Required task props cannot be stored away until the task ends.\n"
         "- Corpse estate loot is collected automatically when you get close enough.\n"
         "- Environmental objects are NOT inventory items unless shown in Held or Inventory.\n"
-        "- Floor changes are disabled (ground floor only). Ignore elevators/stairs.\n"
+        "- Use visible stairs, elevators, or escalators when you need to change floors.\n"
         "- Use exact location and item names when possible; do not invent new places.\n"
     )
 
@@ -448,6 +449,7 @@ def _history_for_model(agent) -> list[dict]:
     for m in list(agent.chat_history or []):
         role = m.get("role", "")
         if role == "tool":
+            # Convert tool role to user role for LLM compatibility
             out.append({"role": "user", "content": str(m.get("content", ""))})
         else:
             out.append(m)
@@ -569,6 +571,7 @@ def _normalize_assistant_output(out: str) -> str:
 
 
 def manage_slot(agent_id: int, action: str):
+    # Note: Assumes slot 0 is safe to use in a single-threaded environment.
     if action == "restore":
         cache_path = os.path.join(CACHE_DIR, f"agent_{agent_id}.bin")
         if not os.path.exists(cache_path):
@@ -581,7 +584,7 @@ def manage_slot(agent_id: int, action: str):
     )
     try:
         urllib.request.urlopen(req)
-    except urllib.error.URLError:
+    except Exception:
         pass
 
 

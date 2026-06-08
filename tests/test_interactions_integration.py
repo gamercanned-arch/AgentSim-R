@@ -224,7 +224,7 @@ def test_attack_mid_task_cancels_task_and_interrupts_busy_until(temp_logs, monke
     assert b.health == pytest.approx(95.0)
 
 
-def test_attack_time_busy_non_task_target_fails(temp_logs, monkeypatch):
+def test_attack_time_busy_non_task_target_succeeds(temp_logs, monkeypatch):
     import python.scheduler
 
     w, a, b = make_world_two_agents()
@@ -232,12 +232,14 @@ def test_attack_time_busy_non_task_target_fails(temp_logs, monkeypatch):
     b.is_sleeping = False
     b.busy_until = 1000.0
 
+    monkeypatch.setattr(random, "uniform", lambda lo, hi: 5.0)
+
     plans = {0: [tool_xml("attack_person", person="Bob")]}
     stub = StubServer(plans)
     monkeypatch.setattr(python.scheduler, "call_server", stub)
 
     python.scheduler.run_tick(w)
-    assert b.health == pytest.approx(100.0)
+    assert b.health == pytest.approx(95.0)  # Attack succeeds, damage applied
 
 
 def test_change_status_sleeping_target_fails_and_does_not_queue(temp_logs, monkeypatch):
@@ -255,3 +257,45 @@ def test_change_status_sleeping_target_fails_and_does_not_queue(temp_logs, monke
 
     python.scheduler.run_tick(w)
     assert b.pending_status_requests.get("alice") is None
+
+
+def test_change_status_accepts_pending_request_and_updates_both_agents():
+    from python.tooling.handlers.social import handle_change_status
+
+    w, a, b = make_world_two_agents()
+    b.pending_status_requests["alice"] = "dating"
+
+    res, suc, cost = handle_change_status(
+        b, w, {"person": "Alice", "type": "dating", "value": ""}
+    )
+
+    assert suc is True
+    assert cost == 30
+    assert "Accepted status change" in res
+    assert b.pending_status_requests.get("alice") is None
+    assert a.relationships_status == "dating"
+    assert b.relationships_status == "dating"
+    assert a.relationship_partner == "Bob"
+    assert b.relationship_partner == "Alice"
+
+
+def test_interruption_during_wait(temp_logs, monkeypatch):
+    import python.scheduler
+
+    w, a, b = make_world_two_agents()
+    
+    b.current_activity = "waiting"
+    b.busy_until = 6000.0
+
+    monkeypatch.setattr(random, "uniform", lambda lo, hi: 5.0)
+
+    plans = {0: [tool_xml("attack_person", person="Bob")]}
+    stub = StubServer(plans)
+    monkeypatch.setattr(python.scheduler, "call_server", stub)
+
+    python.scheduler.run_tick(w)
+
+    assert b.busy_until <= w.sim_time
+    assert b.current_activity == "idle"
+    assert any("interrupted" in n.lower() for n in b.pending_notifications)
+
