@@ -104,6 +104,7 @@ def _build_base_system_prompt(agent) -> str:
         "- Open-air destinations like Park_Central count as being at that location when you arrive.\n"
         "- Vehicles: you can ride only if within 100m of your parked vehicle; fuel costs $/km when riding.\n"
         "- If you cannot afford fuel, move_to fails.\n"
+        "- If you need to pass time (e.g., waiting for a shop/workplace to open), use the wait tool rather than walking around.\n"
         "- pick_item is for nearby dropped ground items, or for the required task prop during an active work or study task.\n"
         "- hold_item moves an inventory item into your hand, or stores your held item back into inventory when item_name is store or None.\n"
         "- Required task props cannot be stored away until the task ends.\n"
