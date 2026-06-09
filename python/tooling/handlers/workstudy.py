@@ -378,6 +378,9 @@ def handle_interact_with(agent, world, args: dict):
         None,
     )
     if target_agent:
+        if getattr(target_agent, "id", None) == agent.id:
+            agent.failed_calls += 1
+            return "Cannot target yourself with this interaction.", False, 60
         if getattr(target_agent, "current_activity", "") == "moving":
             agent.failed_calls += 1
             return "Target is currently in transit. Call them or wait until they arrive.", False, 60

@@ -515,6 +515,7 @@ def run_tick(world) -> None:
         raw_model=raw_model,
         raw_reasoning=raw_reasoning,
         processed_output=processed_out,
+        agent_id=agent.id,
     )
     agent.total_prompt_tokens += int(prompt_tokens)
     parsed_calls, parse_error = parse_tool_calls(processed_out)

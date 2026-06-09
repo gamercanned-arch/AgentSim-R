@@ -6,6 +6,7 @@ from typing import Callable, Dict, List, Tuple
 
 from python.config import TOOLS_PATH
 from python.tooling.parsing import parse_tool_calls
+from python.tooling.schema import OPTIONAL_TOOL_PARAMS
 
 from python.tooling.handlers.movement import handle_move_to, handle_walk
 from python.tooling.handlers.workstudy import (
@@ -120,10 +121,7 @@ def _validate_schema(name: str, args: dict) -> str | None:
 
     provided = set((args or {}).keys())
     
-    # description is an optional parameter for do_hobby
-    optional_params = set()
-    if name == "do_hobby":
-        optional_params.add("description")
+    optional_params = OPTIONAL_TOOL_PARAMS.get(name, set())
 
     missing = [p for p in expected if p not in provided and p not in optional_params]
     if missing:
@@ -277,7 +275,7 @@ def execute_tool(tool_call_str: str, agent_id: int, world) -> Tuple[str, bool, i
         added_cost = max(0, int(cost)) if suc else max(60, int(cost))
         agent._accumulated_turn_time += added_cost
         agent._last_api_tool_steps = [{"id": new_id(), "name": name, "args": dict(args or {}), "result": res, "success": bool(suc), "cost": int(cost)}]
-        return res, suc, cost
+        return res, suc, added_cost
 
     step_results = []
     all_success = True

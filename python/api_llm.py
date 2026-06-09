@@ -14,6 +14,7 @@ from google import genai
 from google.genai import types
 from python.config import CHARS_PER_TOKEN
 from python.prompting import GLOBAL_TOOLS_LIST
+from python.tooling.schema import OPTIONAL_TOOL_PARAMS
 
 
 _STRING_PARAM_HINTS = {
@@ -32,7 +33,6 @@ _STRING_PARAM_HINTS = {
 }
 _NUMBER_PARAM_HINTS = {"amount", "hours", "minutes"}
 _INTEGER_PARAM_HINTS = {"shares"}
-_OPTIONAL_TOOL_PARAMS = {"do_hobby": {"description"}}
 
 def _approx_tokens_from_messages(messages: List[dict]) -> int:
     total_chars = 0
@@ -72,7 +72,7 @@ def _tool_function_declarations(tools: List[dict]) -> List[types.FunctionDeclara
             description=str(tool.get("description", "") or "").strip() or None,
         )
         required_params = [
-            p for p in params if p not in _OPTIONAL_TOOL_PARAMS.get(name, set())
+            p for p in params if p not in OPTIONAL_TOOL_PARAMS.get(name, set())
         ]
         if params:
             declaration.parameters = types.Schema(
@@ -322,7 +322,7 @@ class LLMRouter:
         self.mode = mode
         self.openrouter_headers = openrouter_headers or {}
         self.token_usage_registry = {}
-        self.gemini_tpm_limit = int(os.environ.get("GEMINI_TPM_LIMIT", "220000").strip())
+        self.gemini_tpm_limit = int(os.environ.get("GEMINI_TPM_LIMIT", "250000").strip())
         self.gemini_calls = []
 
         self.gemini_keys = APIKeyRing(self._load_keys("GEMINI_API_KEY"))
@@ -331,12 +331,25 @@ class LLMRouter:
 
         n_keys = len(self.gemini_keys.keys)
         if n_keys > 0:
-            from python.quota import QuotaManager
+            from python.quota import DEFAULT_STATE_PATH, QuotaManager
             initial_models = []
             for cfg in provider_configs.values():
                 if cfg.models:
                     initial_models.extend(cfg.models)
-            self.quota = QuotaManager(n_keys, list(set(initial_models)))
+            self.quota = QuotaManager(
+                n_keys,
+                list(set(initial_models)),
+                key_fingerprints=QuotaManager.fingerprints_from_keys(
+                    self.gemini_keys.keys
+                ),
+                state_path=os.environ.get(
+                    "GEMINI_QUOTA_STATE_PATH", DEFAULT_STATE_PATH
+                ).strip() or DEFAULT_STATE_PATH,
+                rpm_limit=int(os.environ.get("GEMINI_RPM_LIMIT", "15").strip()),
+                flash_lite_tpm_limit=int(
+                    os.environ.get("GEMINI_FLASH_LITE_TPM_LIMIT", "250000").strip()
+                ),
+            )
         else:
             self.quota = None
 
@@ -378,6 +391,7 @@ class LLMRouter:
         return 120000 if has_gemma else 1000000
 
     def _wait_for_tpm_limit(self, prompt_tokens: int, max_tokens: int):
+        # Backward-compatible fallback for callers that do not use QuotaManager.
         import time
         needed = prompt_tokens + max_tokens
         if needed > self.gemini_tpm_limit:
@@ -391,6 +405,50 @@ class LLMRouter:
                 self.gemini_calls.append((now, needed))
                 break
             time.sleep(0.5)
+
+    @staticmethod
+    def _looks_like_quota_or_rate_error(err: Exception) -> bool:
+        s = str(err or "").lower()
+        return any(
+            marker in s
+            for marker in (
+                "quota",
+                "rate",
+                "429",
+                "resource_exhausted",
+                "too many requests",
+                "exceeded",
+            )
+        )
+
+    def _key_attempt_order(
+        self, preferred_idx: int, model: str, estimated_tokens: int = 0
+    ) -> List[int]:
+        n_keys = len(self.gemini_keys.keys)
+        raw = [(preferred_idx + off) % n_keys for off in range(n_keys)]
+        quota = getattr(self, "quota", None)
+        if not quota:
+            return raw
+        with_quota = [
+            idx
+            for idx in raw
+            if quota.key_available(idx, model) and quota.has_daily_quota(idx, model)
+        ]
+        if with_quota:
+            return sorted(
+                with_quota,
+                key=lambda idx: quota.seconds_until_request_slot(
+                    idx, model, estimated_tokens=estimated_tokens
+                ),
+            )
+        available = [idx for idx in raw if quota.key_available(idx, model)]
+        fallback = available or raw
+        return sorted(
+            fallback,
+            key=lambda idx: quota.seconds_until_request_slot(
+                idx, model, estimated_tokens=estimated_tokens
+            ),
+        )
 
     def _provider_sequence(self) -> List[str]:
         if self.mode == "random_provider":
@@ -615,37 +673,36 @@ class LLMRouter:
 
         n_keys = len(self.gemini_keys.keys)
         preferred_idx = (agent_id - 1) % n_keys if agent_id is not None else 0
-        attempts = 0
-        backoff = 5.0
 
         est_prompt = _approx_tokens_from_messages(messages)
-        self._wait_for_tpm_limit(est_prompt, max_tokens)
-        reserved_added = True
+        estimated_total_tokens = est_prompt + max_tokens
+        attempts = 0
+        max_attempts = max(n_keys, n_keys * 3)
+        last_err = None
 
-        while True:
-            # Check if all keys are out of daily quota
-            if self.quota and not self.quota.any_key_has_quota(model):
-                if reserved_added and self.gemini_calls:
-                    self.gemini_calls.pop()
-                    reserved_added = False
-                self.quota.wait_until_quota_reset()
-                if not reserved_added:
-                    self._wait_for_tpm_limit(est_prompt, max_tokens)
-                    reserved_added = True
-                continue
-
-            current_key_idx = (preferred_idx + attempts) % n_keys
-            if self.quota and not self.quota.has_daily_quota(current_key_idx, model):
-                # Try the next key since this key is out of daily quota
+        while attempts < max_attempts:
+            order = self._key_attempt_order(
+                preferred_idx + attempts,
+                model,
+                estimated_tokens=estimated_total_tokens,
+            )
+            if not order:
+                time.sleep(1.0)
                 attempts += 1
-                if attempts > 3 * n_keys:
-                    time.sleep(1.0)
                 continue
+
+            current_key_idx = order[0]
 
             k = self.gemini_keys.keys[current_key_idx]
 
             if self.quota:
-                self.quota.wait_for_rpm_slot(current_key_idx, model)
+                self.quota.wait_for_rpm_slot(
+                    current_key_idx,
+                    model,
+                    estimated_tokens=estimated_total_tokens,
+                )
+            else:
+                self._wait_for_tpm_limit(est_prompt, max_tokens)
 
             try:
                 if k not in self._clients:
@@ -657,10 +714,6 @@ class LLMRouter:
                     contents=merged_contents,
                     config=genai_config
                 )
-                # Record quota after successful request
-                if self.quota:
-                    self.quota.record_request(current_key_idx, model)
-                
                 # Safe response text extraction
                 content = ""
                 reasoning = ""
@@ -688,8 +741,15 @@ class LLMRouter:
                     completion_tokens = response.usage_metadata.candidates_token_count or 0
 
                 actual_total = prompt_tokens + completion_tokens
-                if reserved_added and self.gemini_calls:
+                if not self.quota and self.gemini_calls:
                     self.gemini_calls[-1] = (self.gemini_calls[-1][0], actual_total)
+                if self.quota:
+                    self.quota.record_request(
+                        current_key_idx,
+                        model,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                    )
 
                 # Update token registry
                 if model not in self.token_usage_registry:
@@ -707,30 +767,25 @@ class LLMRouter:
                     completion_tokens=completion_tokens,
                 )
             except Exception as e:
-                if reserved_added and self.gemini_calls:
+                if not self.quota and self.gemini_calls:
                     self.gemini_calls.pop()
-                    reserved_added = False
 
-                if isinstance(e, ValueError):
-                    # safety block: return empty response
-                    return RawLLMResponse(provider="gemini", model=model, content="", reasoning="")
-                
-                # Record quota for errors that likely reached Google (HTTP 4xx/5xx)
+                last_err = e
                 if self.quota:
-                    self.quota.record_request(current_key_idx, model)
+                    self.quota.record_error(current_key_idx, model, e)
                 err_str = str(e)
-                print(f"    [API ERROR] {err_str[:150]}... on key {current_key_idx+1}. Rotating key. Backoff {backoff:.0f}s")
-                time.sleep(backoff)
-                backoff = min(60.0, backoff * 2)
-                
+                quotaish = self._looks_like_quota_or_rate_error(e)
+                suffix = " Cooldown recorded." if quotaish else ""
+                print(
+                    f"    [API ERROR] {err_str[:150]}... on key "
+                    f"{current_key_idx+1}. Rotating key.{suffix}"
+                )
                 attempts += 1
-                if attempts >= n_keys * 3:
-                    raise RuntimeError(f"Worker {agent_id} all gemini keys failed after {attempts} rotating attempts. Last error: {err_str}")
-                
-                if not reserved_added:
-                    self._wait_for_tpm_limit(est_prompt, max_tokens)
-                    reserved_added = True
                 continue
+        raise RuntimeError(
+            f"Worker {agent_id} all gemini keys failed for model {model} "
+            f"after {attempts} attempts. Last error: {last_err}"
+        )
 
 
 class Summarizer:

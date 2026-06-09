@@ -59,7 +59,7 @@ llama-server -m /path/to/model.gguf -c 262144 --parallel 1 --slot-save-path ./ca
 ```
 
 Key points:
-- Context is configured for large windows (`CONTEXT_SIZE=262144` in `python/config.py`).
+- Context is configured for large windows (`CONTEXT_SIZE=220000` in `python/config.py`).
 - **Per-agent slot save/restore** is enabled using `cache/agent_{id}.bin`.
 - Generation settings are configured in `python/prompting.py` (`temperature`, `top_p`, `repeat_penalty`, etc.).
 
@@ -75,6 +75,14 @@ Runs exclusively using the Google GenAI SDK (optimized natively for Gemini 3.1 &
 ```bash
 python run_api_sim.py
 ```
+
+API runner notes:
+- Gemini/Gemma calls use high reasoning through the Google GenAI SDK.
+- Gemma models do not accept native system instructions, so the API runner folds the system prompt into the first user message for Gemma calls only.
+- The API runner has a separate context/quota profile from the local llama-server path. Flash-lite token-per-minute defaults to `250000`; Gemma context handling may be more conservative.
+- Default summarization fallback order is `gemma-4-26b-a4b-it`, `gemma-4-31b-it`, then `gemini-3.1-flash-lite`. Override with `SUMMARY_MODELS` or `SUMMARY_MODEL`.
+- Gemini quota state is persisted to `cache/quota_state.json` by default. Override with `GEMINI_QUOTA_STATE_PATH`.
+- Per-key defaults are `GEMINI_RPM_LIMIT=15` and `GEMINI_FLASH_LITE_TPM_LIMIT=250000`. The local ledger tracks hashed key fingerprints, per-model daily counts, recent RPM/TPM windows, and short provider-error cooldowns. It rotates keys/models before giving up and does not intentionally pause the whole simulation until a local daily reset.
 
 ### View Logs:
 To view the logs (in real time)
@@ -158,7 +166,7 @@ In API mode, Gemini receives `tools` through the Google GenAI SDK's native funct
 ## 4) World model (imaginary world)
 
 The village is a continuous coordinate plane (`0..5000m`), with hardcoded 3D location boxes (buildings, parks, outdoor spaces, homes).
-- **Temporary floor restriction**: For now, agents are clamped to the **ground floor (Z=0)**. Floor-changing interactions are disabled.
+- **API runner floor restriction**: `run_api_sim.py` intentionally clamps agents and vehicles to **ground floor (Z=0)**. This disables floor-changing during API runs even though the location data still contains multi-floor definitions for the broader engine/tests.
 
 Public locations include:
 - `Hospital`, `School`, `Office_FedEx`, `Startup_Sowl`
@@ -329,7 +337,15 @@ Logs are JSONL (one JSON object per line) and include:
 - Pre/post agent state snapshots
 - Tool name/args/result
 - Prompt hash + prompt char count
-- Structured `system_prompt` + `user_observation` fields
+- System prompt hash + character count
+- The latest user observation
+- Raw provider/model output, processed tool-call output, and raw Gemini reasoning when returned by the SDK
+
+To avoid repeating huge prompts on every turn, full system prompts are written once per unique hash to:
+
+```text
+logs/system_prompts.jsonl
+```
 
 Enable full prompt/messages logging:
 

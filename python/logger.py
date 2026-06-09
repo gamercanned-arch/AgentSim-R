@@ -19,6 +19,8 @@ except ValueError:
     LOG_MAX_CHARS = 6000
 
 _WRITE_LOCK = threading.Lock()
+_SEEN_SYSTEM_PROMPTS = set()
+_SYSTEM_PROMPTS_INDEXED = False
 
 try:
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -55,6 +57,25 @@ def _sha16(text: str) -> str:
     return hashlib.sha256(b).hexdigest()[:16]
 
 
+def _index_existing_system_prompts_locked(path: str) -> None:
+    global _SYSTEM_PROMPTS_INDEXED
+    if _SYSTEM_PROMPTS_INDEXED:
+        return
+    _SYSTEM_PROMPTS_INDEXED = True
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                except (TypeError, ValueError):
+                    continue
+                h = str(entry.get("system_prompt_hash", "") or "").strip()
+                if h:
+                    _SEEN_SYSTEM_PROMPTS.add(h)
+    except OSError:
+        return
+
+
 def _summarize_messages(messages: list) -> dict:
     if not messages:
         return {"message_count": 0}
@@ -82,6 +103,31 @@ def _summarize_messages(messages: list) -> dict:
         "last_user_preview": _truncate(last_user, 2000),
         "last_assistant_preview": _truncate(last_assistant, 1200),
     }
+
+
+def _log_system_prompt_once(agent_name: str, agent_id: int, system_prompt: str) -> str:
+    system_hash = _sha16(system_prompt)
+    if not system_prompt:
+        return system_hash
+    key = system_hash
+    with _WRITE_LOCK:
+        path = os.path.join(LOG_DIR, "system_prompts.jsonl")
+        _index_existing_system_prompts_locked(path)
+        if key in _SEEN_SYSTEM_PROMPTS:
+            return system_hash
+        _SEEN_SYSTEM_PROMPTS.add(key)
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event": "system_prompt",
+            "agent": agent_name,
+            "agent_id": int(agent_id),
+            "system_prompt_hash": system_hash,
+            "system_prompt_chars": len(system_prompt),
+            "system_prompt": system_prompt,
+        }
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+    return system_hash
 
 
 def _extract_system_user(messages: list) -> tuple[str, str]:
@@ -205,6 +251,8 @@ def log_turn(
     processed_output: str | None = None,
 ) -> None:
     system_prompt, user_observation = _extract_system_user(messages)
+    system_prompt_hash = _log_system_prompt_once(agent.name, agent.id, system_prompt)
+    message_summary = _summarize_messages(messages)
 
     entry = {
         "event": "turn",
@@ -214,7 +262,9 @@ def log_turn(
         "notifications_presented": notifications,
         "notifications_shown_list": notifications_shown or[],
         "notifications_remaining_count": int(notifications_remaining),
-        "system_prompt": system_prompt,
+        "system_prompt_hash": system_prompt_hash,
+        "system_prompt_chars": len(system_prompt),
+        "message_summary": message_summary,
         "user_observation": user_observation,
         "prompt_hash": prompt_hash,
         "prompt_chars": int(prompt_chars) if prompt_chars else 0,
@@ -235,7 +285,8 @@ def log_turn(
         "post_state": post_state,
     }
 
-    entry["turn_messages"] = _get_new_messages_this_turn(messages, raw_output)
+    if LOG_FULL_MESSAGES:
+        entry["turn_messages"] = _get_new_messages_this_turn(messages, raw_output)
     log_agent(agent.id, entry)
 
 
@@ -254,14 +305,21 @@ def log_io(
     raw_model: str | None = None,
     raw_reasoning: str | None = None,
     processed_output: str | None = None,
+    agent_id: int | None = None,
 ) -> None:
     system_prompt, user_observation = _extract_system_user(messages)
+    system_prompt_hash = _log_system_prompt_once(
+        agent_name, -1 if agent_id is None else agent_id, system_prompt
+    )
+    message_summary = _summarize_messages(messages)
 
     io_entry = {
         "event": "io",
         "agent": agent_name,
         "sim_time": sim_time,
-        "system_prompt": system_prompt,
+        "system_prompt_hash": system_prompt_hash,
+        "system_prompt_chars": len(system_prompt),
+        "message_summary": message_summary,
         "user_observation": user_observation,
         "prompt_hash": prompt_hash,
         "prompt_chars": int(prompt_chars) if prompt_chars else 0,
@@ -276,7 +334,8 @@ def log_io(
     }
 
 
-    io_entry["turn_messages"] = _get_new_messages_this_turn(messages, raw_output)
+    if LOG_FULL_MESSAGES:
+        io_entry["turn_messages"] = _get_new_messages_this_turn(messages, raw_output)
 
     _write(os.path.join(LOG_DIR, "global_io_dataset.jsonl"), io_entry)
 

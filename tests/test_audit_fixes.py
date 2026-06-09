@@ -1347,7 +1347,7 @@ class TestAdditionalAuditFixes:
         assert err2 is None
         
         err3 = _validate_schema("do_hobby", {"description": "reading"})
-        assert err3 is not None
+        assert err3 is None
 
     def test_atomic_save(self, tmp_path):
         import os
@@ -1459,7 +1459,7 @@ class TestAdditionalAuditFixes:
         assert os.path.exists(tmp_path / "saves")
         assert not os.path.exists(old_dir)
 
-    def test_gemini_key_rotation(self, monkeypatch):
+    def test_gemini_key_rotation(self, monkeypatch, tmp_path):
         import os
         import time
         from python.api_llm import LLMRouter, ProviderConfig
@@ -1473,6 +1473,7 @@ class TestAdditionalAuditFixes:
         monkeypatch.setenv("GEMINI_API_KEY_2", "key2")
         monkeypatch.setenv("GEMINI_API_KEY_3", "key3")
         monkeypatch.setenv("GEMINI_TPM_LIMIT", "220000")
+        monkeypatch.setenv("GEMINI_QUOTA_STATE_PATH", str(tmp_path / "quota_state.json"))
         monkeypatch.setattr(time, "sleep", lambda x: None)
         monkeypatch.setattr("python.api_llm.load_dotenv", lambda: None)
         

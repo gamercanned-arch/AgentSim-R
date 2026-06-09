@@ -61,6 +61,9 @@ def _leave_voicemail(
     if len(target.voicemail_inbox) > max_keep:
         target.voicemail_inbox = target.voicemail_inbox[-max_keep:]
 
+def _is_self_target(agent, target) -> bool:
+    return bool(target is not None and getattr(target, "id", None) == agent.id)
+
 def handle_talk_to(agent, world, args: dict):
     t_name = str(args.get("person", "")).strip()
     msg = _clean_social_message(args.get("message", ""))
@@ -69,6 +72,9 @@ def handle_talk_to(agent, world, args: dict):
     if not target or not target.alive:
         agent.failed_calls += 1
         return "Target not found.", False, 60
+    if _is_self_target(agent, target):
+        agent.failed_calls += 1
+        return "Cannot target yourself with this social action.", False, 60
         
     if getattr(target, "current_activity", "") == "moving":
         agent.failed_calls += 1
@@ -114,6 +120,9 @@ def handle_call_person(agent, world, args: dict):
     if not target or not target.alive:
         agent.failed_calls += 1
         return "Target not found.", False, 60
+    if _is_self_target(agent, target):
+        agent.failed_calls += 1
+        return "Cannot call yourself.", False, 60
         
     if is_unavailable(target, world.sim_time):
         _leave_voicemail(target, agent, msg, world.sim_time)
@@ -135,6 +144,9 @@ def handle_give_item(agent, world, args: dict):
     if not target or not target.alive:
         agent.failed_calls += 1
         return "Target not found.", False, 60
+    if _is_self_target(agent, target):
+        agent.failed_calls += 1
+        return "Cannot give an item to yourself.", False, 60
         
     if getattr(target, "current_activity", "") == "moving":
         agent.failed_calls += 1
@@ -283,6 +295,9 @@ def handle_change_status(agent, world, args: dict):
         if not target or not target.alive:
             agent.failed_calls += 1
             return f"Person '{person}' not found.", False, 60
+        if _is_self_target(agent, target):
+            agent.failed_calls += 1
+            return "Cannot request a relationship status change with yourself.", False, 60
             
         if getattr(target, "current_activity", "") == "moving":
             agent.failed_calls += 1
@@ -350,6 +365,9 @@ def handle_attack_person(agent, world, args: dict):
     if not target or not target.alive:
         agent.failed_calls += 1
         return "Target not found.", False, 60
+    if _is_self_target(agent, target):
+        agent.failed_calls += 1
+        return "Cannot attack yourself.", False, 60
         
     ok, reason = can_physically_reach_person(agent, target, 20.0)
     if not ok:

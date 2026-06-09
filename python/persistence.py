@@ -8,12 +8,6 @@ from python.state import AgentState, WorldState
 SAVE_VERSION = 1
 
 
-def _ensure_dir(path: str) -> None:
-    d = os.path.dirname(os.path.abspath(path))
-    if d:
-        os.makedirs(d, exist_ok=True)
-
-
 def _load_json_file(path: str) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         payload = json.load(f) or {}

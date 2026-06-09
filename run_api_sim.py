@@ -39,9 +39,9 @@ API_CONTEXT_FILL_RATIO = 0.80
 API_MAX_NEW_TOKENS = 16384
 API_TOKEN_TARGET = int(API_CONTEXT_SIZE * API_CONTEXT_FILL_RATIO)
 DEFAULT_SUMMARY_MODELS = [
-    "gemini-3-flash",
-    "gemini-3.5-flash",
-    "gemini-2.5-flash",
+    "gemma-4-26b-a4b-it",
+    "gemma-4-31b-it",
+    "gemini-3.1-flash-lite",
 ]
 DEFAULT_SUMMARY_MAX_OUTPUT_TOKENS = 16384
 DEFAULT_SUMMARY_MAX_SUMMARY_TOKENS = 32768
@@ -50,20 +50,27 @@ DEFAULT_SUMMARY_COMPACT_AT_TOKENS = 24576
 
 def _wipe_cache_and_logs() -> None:
     for f in glob.glob(os.path.join(CACHE_DIR, "*.bin")):
-        try: os.remove(f)
-        except OSError: pass
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
+    for f in glob.glob(os.path.join(LOG_DIR, "*.*")):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
+    try:
+        if os.path.exists(SAVE_PATH):
+            os.remove(SAVE_PATH)
+    except OSError:
+        pass
 
 
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name, "").strip()
     return int(raw) if raw else int(default)
-    for f in glob.glob(os.path.join(LOG_DIR, "*.*")):
-        try: os.remove(f)
-        except OSError: pass
-    try:
-        if os.path.exists(SAVE_PATH):
-            os.remove(SAVE_PATH)
-    except OSError: pass
 
 
 def _render_prompt_plain(messages: list) -> str:
@@ -507,7 +514,7 @@ def _load_models_list(filepath: str = "models_list") -> list[str]:
             lines = [line.strip() for line in f if line.strip()]
             if lines: return lines
     except OSError: pass
-    return ["gemini-2.5-flash"]
+    return ["gemma-4-26b-a4b-it", "gemma-4-31b-it", "gemini-3.1-flash-lite"]
 
 
 def _models_from_env(provider_prefix: str, default: str) -> list[str]:
@@ -633,8 +640,7 @@ def main():
 
     if getattr(router, "quota", None):
         for model in summary_models:
-            if model not in router.quota.models:
-                router.quota.models.append(model)
+            router.quota.add_model(model)
 
     summary_chain = [
         Summarizer(
